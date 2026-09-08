@@ -33,7 +33,13 @@ Alternative (static username/password from the same dashboard):
 
 Render terminates HTTPS; the app listens on `$PORT` over HTTP.
 
-**Note:** Same-LAN demos work better with a local build: `broadcast.exe -listen 0.0.0.0 -https` (no Metered needed).
+**Note:** Same-LAN demos work better with a local build (`go run . -listen 0.0.0.0 -https`) — no Metered needed.
+
+## Reliability notes
+
+- Idle rooms without media are GC’d after ~3 minutes.
+- Host **End** closes the peer connection (room code stays for a retry until idle GC).
+- Cloud Go live is blocked until `/status` reports `turn_ready: true`.
 
 ## Local
 

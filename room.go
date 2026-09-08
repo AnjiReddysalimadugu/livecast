@@ -18,7 +18,12 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const maxRooms = 5
+const (
+	maxRooms          = 5
+	idleRoomTTL       = 3 * time.Minute // no media + no publisher → GC
+	viewerICEGrace    = 12 * time.Second
+	secondTrackWait   = 15 * time.Second
+)
 
 var roomIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{3,24}$`)
 
@@ -35,9 +40,12 @@ type Room struct {
 
 	mu          sync.Mutex
 	publisherPC *webrtc.PeerConnection
+	viewerPCs   []*webrtc.PeerConnection
 	tracks      []*webrtc.TrackLocalStaticRTP
 	ready       chan struct{} // closed when tracks ready
 	closed      bool
+	createdAt   time.Time
+	lastActive  time.Time
 
 	faces        *faceHub
 	transcripts  *transcriptHub
@@ -59,12 +67,85 @@ type RoomManager struct {
 }
 
 func newRoomManager(api *webrtc.API, cfg webrtc.Configuration, events *faceEventLogger) *RoomManager {
-	return &RoomManager{
+	rm := &RoomManager{
 		rooms:  make(map[string]*Room),
 		api:    api,
 		cfg:    cfg,
 		events: events,
 	}
+	go rm.gcLoop()
+	return rm
+}
+
+func (rm *RoomManager) gcLoop() {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		rm.gcIdleRooms()
+	}
+}
+
+// gcIdleRooms drops rooms that never got media (or lost publisher) past idleRoomTTL.
+func (rm *RoomManager) gcIdleRooms() {
+	rm.mu.Lock()
+	ids := make([]string, 0)
+	now := time.Now()
+	for id, r := range rm.rooms {
+		r.mu.Lock()
+		idle := len(r.tracks) == 0 && r.publisherPC == nil
+		age := now.Sub(r.lastActive)
+		if r.lastActive.IsZero() {
+			age = now.Sub(r.createdAt)
+		}
+		r.mu.Unlock()
+		if idle && age > idleRoomTTL {
+			ids = append(ids, id)
+		}
+	}
+	rm.mu.Unlock()
+	for _, id := range ids {
+		fmt.Printf("room GC: removing idle room %s\n", id)
+		rm.remove(id)
+	}
+}
+
+func (r *Room) touch() {
+	r.mu.Lock()
+	r.lastActive = time.Now()
+	r.mu.Unlock()
+}
+
+func (r *Room) addViewerPC(pc *webrtc.PeerConnection) {
+	if pc == nil {
+		return
+	}
+	r.mu.Lock()
+	r.viewerPCs = append(r.viewerPCs, pc)
+	r.lastActive = time.Now()
+	r.mu.Unlock()
+	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+		if s != webrtc.ICEConnectionStateFailed && s != webrtc.ICEConnectionStateClosed && s != webrtc.ICEConnectionStateDisconnected {
+			return
+		}
+		go func() {
+			time.Sleep(viewerICEGrace)
+			st := pc.ICEConnectionState()
+			if st != webrtc.ICEConnectionStateFailed && st != webrtc.ICEConnectionStateClosed {
+				return
+			}
+			_ = pc.Close()
+			r.mu.Lock()
+			out := r.viewerPCs[:0]
+			for _, v := range r.viewerPCs {
+				if v != nil && v != pc {
+					out = append(out, v)
+				}
+			}
+			r.viewerPCs = out
+			r.mu.Unlock()
+			fmt.Printf("room %s: viewer PC closed (%s)\n", r.ID, st.String())
+		}()
+	})
 }
 
 func normalizeRoomID(id string) (string, error) {
@@ -121,6 +202,7 @@ func (rm *RoomManager) getOrCreate(id string) (*Room, error) {
 	if len(rm.rooms) >= maxRooms {
 		return nil, fmt.Errorf("too many rooms (max %d) — close an idle room", maxRooms)
 	}
+	now := time.Now()
 	r := &Room{
 		ID:           id,
 		faces:        &faceHub{events: rm.events},
@@ -128,6 +210,8 @@ func (rm *RoomManager) getOrCreate(id string) (*Room, error) {
 		answers:      &answerHub{},
 		translations: &translateHub{},
 		ready:        make(chan struct{}),
+		createdAt:    now,
+		lastActive:   now,
 	}
 	r.translator = newLiveTranslator(r.translations)
 	r.answerBot = newAnswerClient(r.answers)
@@ -175,6 +259,8 @@ func (r *Room) shutdown() {
 	r.closed = true
 	pc := r.publisherPC
 	r.publisherPC = nil
+	viewers := append([]*webrtc.PeerConnection(nil), r.viewerPCs...)
+	r.viewerPCs = nil
 	r.tracks = nil
 	fw := r.faceWorker
 	asr := r.asr
@@ -183,6 +269,11 @@ func (r *Room) shutdown() {
 	r.mu.Unlock()
 	if pc != nil {
 		_ = pc.Close()
+	}
+	for _, v := range viewers {
+		if v != nil {
+			_ = v.Close()
+		}
 	}
 	fw.Close()
 	asr.Close()
@@ -363,24 +454,26 @@ func (rm *RoomManager) publish(ex sdpExchange) {
 
 	ex.answer <- encode(pc.LocalDescription())
 	fmt.Printf("room %s: publisher answer — waiting for tracks…\n", r.ID)
+	r.touch()
 
+	// Answer already sent — do not write ex.err after this (client treats answer as success).
 	tracks, ok := waitTracksOnly(localTrackChan, 45*time.Second)
 	if !ok {
-		fmt.Printf("room %s: publisher media timeout (ICE/TURN likely blocked)\n", r.ID)
+		fmt.Printf("room %s: publisher media timeout (ICE/TURN likely blocked) — room kept for retry\n", r.ID)
 		_ = pc.Close()
 		r.mu.Lock()
 		if r.publisherPC == pc {
 			r.publisherPC = nil
 			r.tracks = nil
 		}
+		r.lastActive = time.Now()
 		r.mu.Unlock()
-		// Keep the room so the host can Go live again with the same code.
-		ex.err <- "media did not connect — check mic/camera, wait 3s, Go live again"
 		return
 	}
 
 	r.mu.Lock()
 	r.tracks = tracks
+	r.lastActive = time.Now()
 	ready := r.ready
 	r.mu.Unlock()
 	select {
@@ -388,7 +481,11 @@ func (rm *RoomManager) publish(ex sdpExchange) {
 	default:
 		close(ready)
 	}
-	fmt.Printf("room %s: media ready (%d tracks)\n", r.ID, len(tracks))
+	kinds := make([]string, 0, len(tracks))
+	for _, t := range tracks {
+		kinds = append(kinds, t.Kind().String())
+	}
+	fmt.Printf("room %s: media ready (%d tracks: %s)\n", r.ID, len(tracks), strings.Join(kinds, ","))
 
 	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
 		fmt.Printf("room %s publisher ICE: %s\n", r.ID, s.String())
@@ -439,7 +536,7 @@ func (rm *RoomManager) view(ex sdpExchange) {
 			return
 		}
 		if len(tracks) > 0 {
-			if err := handleViewer(rm.api, rm.cfg, r.faces, r.transcripts, r.answers, r.translations, tracks, ex); err != nil {
+			if err := handleViewer(rm.api, rm.cfg, r, tracks, ex); err != nil {
 				fmt.Printf("room %s viewer error: %v\n", r.ID, err)
 				ex.err <- err.Error()
 			}
@@ -460,7 +557,7 @@ func (rm *RoomManager) view(ex sdpExchange) {
 	}
 }
 
-// waitTracksOnly waits for publisher tracks without a shared sdpChan.
+// waitTracksOnly waits for publisher A/V tracks. Prefers both; accepts one only at full timeout.
 func waitTracksOnly(localTrackChan <-chan *webrtc.TrackLocalStaticRTP, timeout time.Duration) ([]*webrtc.TrackLocalStaticRTP, bool) {
 	tracks := make([]*webrtc.TrackLocalStaticRTP, 0, 2)
 	deadline := time.After(timeout)
@@ -468,16 +565,22 @@ func waitTracksOnly(localTrackChan <-chan *webrtc.TrackLocalStaticRTP, timeout t
 		select {
 		case t := <-localTrackChan:
 			tracks = append(tracks, t)
-			if len(tracks) >= 1 {
+			if len(tracks) == 1 {
+				// Give the second track a real window (was 3s — too short on cloud TURN).
 				select {
 				case t2 := <-localTrackChan:
 					tracks = append(tracks, t2)
-				case <-time.After(3 * time.Second):
+					return tracks, true
+				case <-time.After(secondTrackWait):
+					// keep waiting until overall deadline for the second track
+				case <-deadline:
+					fmt.Printf("waitTracks: only %d track(s) at deadline\n", len(tracks))
+					return tracks, true
 				}
-				return tracks, true
 			}
 		case <-deadline:
 			if len(tracks) > 0 {
+				fmt.Printf("waitTracks: only %d track(s) at deadline\n", len(tracks))
 				return tracks, true
 			}
 			return nil, false

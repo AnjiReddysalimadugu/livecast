@@ -4,6 +4,7 @@
 //go:build !js
 
 // broadcast demonstrates SFU audio/video broadcast with server-side face detection.
+// LiveCast: cloud-oriented rooms + Metered TURN + Host/Join UI.
 package main
 
 import (
@@ -54,12 +55,28 @@ func (h *faceHub) reset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.chans = nil
-	// keep last face status so /face polling still works across reconnects
+	h.last = nil
+}
+
+func pruneOpenDCs(chans []*webrtc.DataChannel) []*webrtc.DataChannel {
+	out := chans[:0]
+	for _, dc := range chans {
+		if dc == nil {
+			continue
+		}
+		st := dc.ReadyState()
+		if st == webrtc.DataChannelStateClosed || st == webrtc.DataChannelStateClosing {
+			continue
+		}
+		out = append(out, dc)
+	}
+	return out
 }
 
 func (h *faceHub) add(dc *webrtc.DataChannel) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.chans = pruneOpenDCs(h.chans)
 	h.chans = append(h.chans, dc)
 
 	dc.OnOpen(func() {
@@ -76,6 +93,7 @@ func (h *faceHub) add(dc *webrtc.DataChannel) {
 func (h *faceHub) broadcast(msg []byte) {
 	h.mu.Lock()
 	h.last = append([]byte(nil), msg...)
+	h.chans = pruneOpenDCs(h.chans)
 	chans := append([]*webrtc.DataChannel(nil), h.chans...)
 	events := h.events
 	h.mu.Unlock()
@@ -526,10 +544,7 @@ func roomFromRequest(req *http.Request, rooms *RoomManager) *Room {
 func handleViewer(
 	api *webrtc.API,
 	cfg webrtc.Configuration,
-	hub *faceHub,
-	transcripts *transcriptHub,
-	answers *answerHub,
-	translations *translateHub,
+	r *Room,
 	localTracks []*webrtc.TrackLocalStaticRTP,
 	viewer sdpExchange,
 ) error {
@@ -542,19 +557,19 @@ func handleViewer(
 	if err != nil {
 		return err
 	}
-	if err := createFacesChannel(viewerPC, hub); err != nil {
+	if err := createFacesChannel(viewerPC, r.faces); err != nil {
 		_ = viewerPC.Close()
 		return err
 	}
-	if err := createTranscriptChannel(viewerPC, transcripts); err != nil {
+	if err := createTranscriptChannel(viewerPC, r.transcripts); err != nil {
 		_ = viewerPC.Close()
 		return err
 	}
-	if err := createAnswerChannel(viewerPC, answers); err != nil {
+	if err := createAnswerChannel(viewerPC, r.answers); err != nil {
 		_ = viewerPC.Close()
 		return err
 	}
-	if err := createTranslateChannel(viewerPC, translations); err != nil {
+	if err := createTranslateChannel(viewerPC, r.translations); err != nil {
 		_ = viewerPC.Close()
 		return err
 	}
@@ -594,8 +609,10 @@ func handleViewer(
 	case <-time.After(10 * time.Second):
 	}
 
+	r.addViewerPC(viewerPC)
+	r.touch()
 	viewer.answer <- encode(viewerPC.LocalDescription())
-	fmt.Println("Viewer answer ready")
+	fmt.Printf("room %s: viewer answer ready\n", r.ID)
 	return nil
 }
 

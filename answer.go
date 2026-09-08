@@ -41,11 +41,13 @@ func (h *answerHub) reset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.chans = nil
+	h.last = nil
 }
 
 func (h *answerHub) add(dc *webrtc.DataChannel) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.chans = pruneOpenDCs(h.chans)
 	h.chans = append(h.chans, dc)
 	dc.OnOpen(func() {
 		h.mu.Lock()
@@ -61,6 +63,7 @@ func (h *answerHub) add(dc *webrtc.DataChannel) {
 func (h *answerHub) broadcast(msg []byte) {
 	h.mu.Lock()
 	h.last = append([]byte(nil), msg...)
+	h.chans = pruneOpenDCs(h.chans)
 	chans := append([]*webrtc.DataChannel(nil), h.chans...)
 	h.mu.Unlock()
 	for _, dc := range chans {

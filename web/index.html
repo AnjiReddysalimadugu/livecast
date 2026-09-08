@@ -684,7 +684,10 @@
           <strong id="liveBarTitle">You're live</strong>
           <span id="liveBarCopy">Share the room code with viewers</span>
         </div>
-        <button id="copyLiveLinkBtn" class="btn-ghost" type="button">Copy link</button>
+        <div class="actions-row" style="margin:0;gap:0.45rem">
+          <button id="copyLiveLinkBtn" class="btn-ghost" type="button">Copy link</button>
+          <button id="endSessionBtn" class="btn-ghost" type="button">End</button>
+        </div>
       </div>
 
       <div class="room-gate setup-only">
@@ -842,7 +845,61 @@
     const liveBarTitle = document.getElementById('liveBarTitle')
     const liveBarCopy = document.getElementById('liveBarCopy')
     const copyLiveLinkBtn = document.getElementById('copyLiveLinkBtn')
+    const endSessionBtn = document.getElementById('endSessionBtn')
     let sessionLive = false
+    let remoteStream = null
+    let gotRemoteTrack = false
+
+    function closePeer() {
+      try {
+        if (pc) {
+          pc.ontrack = null
+          pc.oniceconnectionstatechange = null
+          pc.close()
+        }
+      } catch (_) {}
+      pc = null
+      videoSender = null
+      audioSender = null
+      gotRemoteTrack = false
+    }
+
+    function stopLocalMedia() {
+      try {
+        if (sharedStream) sharedStream.getTracks().forEach((t) => t.stop())
+      } catch (_) {}
+      sharedStream = null
+      try {
+        if (screenStream) screenStream.getTracks().forEach((t) => t.stop())
+      } catch (_) {}
+      screenStream = null
+      if (video && !isViewer) video.srcObject = null
+    }
+
+    function endSession(opts) {
+      const keepCam = !!(opts && opts.keepCamera)
+      const room = currentRoom()
+      closePeer()
+      if (!keepCam) stopLocalMedia()
+      if (remoteStream) {
+        try { remoteStream.getTracks().forEach((t) => t.stop()) } catch (_) {}
+        remoteStream = null
+      }
+      if (video && isViewer) video.srcObject = null
+      publisherControls.classList.remove('is-open')
+      publisherControls.style.display = 'none'
+      unmuteBtn.style.display = 'none'
+      setSessionLive(false)
+      allowCamBtn.disabled = false
+      publishBtn.disabled = !(sharedStream && sharedStream.active)
+      joinBtn.disabled = false
+      joinBtn.textContent = 'Join live cast'
+      if (camHint) { camHint.className = 'toast-err'; camHint.textContent = '' }
+      if (joinHint) { joinHint.className = 'toast-err'; joinHint.textContent = '' }
+      faceStatus.textContent = 'waiting…'
+      faceStatus.className = 'no'
+      log(room ? ('Ended session · room ' + room + ' kept') : 'Ended session')
+    }
 
     function setSessionLive(on, role) {
       sessionLive = !!on
@@ -864,8 +921,12 @@
           joinHint.className = 'toast-ok'
           joinHint.textContent = room ? ('Joined room ' + room) : 'Joined'
         }
-      } else if (camHint) {
-        camHint.className = 'toast-err'
+        hostTools.classList.toggle('is-on', !isJoin)
+      } else {
+        if (camHint) camHint.className = 'toast-err'
+        if (joinHint) joinHint.className = 'toast-err'
+        hostTools.classList.toggle('is-on', uiMode === 'host')
+        setMode(uiMode)
       }
     }
 
@@ -1073,6 +1134,7 @@
     }
     copyRoomBtn.onclick = () => { copyViewerLink() }
     if (copyLiveLinkBtn) copyLiveLinkBtn.onclick = () => { copyViewerLink() }
+    if (endSessionBtn) endSessionBtn.onclick = () => { endSession({ keepCamera: uiMode === 'host' }) }
     roomIdInput.addEventListener('input', () => {
       roomIdInput.value = roomIdInput.value.replace(/\s+/g, '').toLowerCase()
       clearRoomError()
@@ -1477,8 +1539,14 @@
         if (!res.ok) return
         turnStatus = await res.json()
         log('TURN: ' + (turnStatus.turn_ready ? 'ready' : 'NOT ready') + ' (' + (turnStatus.ice_source || '?') + ')')
-        if (turnStatus.cloud && !turnStatus.turn_ready && turnStatus.hint) {
-          log(turnStatus.hint)
+        if (turnStatus.cloud && !turnStatus.turn_ready) {
+          const msg = turnStatus.hint || 'TURN not ready — Go live will fail on this cloud host'
+          log(msg)
+          if (secureBanner && !secureBanner.classList.contains('is-on')) {
+            secureBanner.classList.add('is-on')
+            secureBanner.textContent = msg
+          }
+          publishBtn.disabled = true
         }
       } catch (_) {}
     }
@@ -1607,8 +1675,12 @@
       translateBox.innerHTML = ''
       transcriptStatus.textContent = 'connecting…'
       translateStatus.textContent = 'waiting…'
+      closePeer()
 
       const iceConfig = await loadIceConfig()
+      if (turnStatus.cloud && !turnStatus.turn_ready) {
+        throw new Error('TURN not ready on server — check Metered env on Render')
+      }
       pc = new RTCPeerConnection(iceConfig)
       attachFacesChannel()
       let iceDeadTimer = null
@@ -1619,14 +1691,8 @@
         if (st === 'failed' || st === 'closed') {
           iceDeadTimer = setTimeout(() => {
             if (!pc || (pc.iceConnectionState !== 'failed' && pc.iceConnectionState !== 'closed')) return
-            log('Publisher link lost — click Publish again')
-            publishBtn.disabled = false
-            joinBtn.disabled = false
-            allowCamBtn.disabled = false
-            publisherControls.classList.remove('is-open')
-            publisherControls.style.display = 'none'
-            faceStatus.textContent = 'offline'
-            faceStatus.className = 'no'
+            log('Publisher link lost')
+            endSession({ keepCamera: true })
           }, 8000)
         } else if (st === 'disconnected') {
           log('ICE blip (disconnected) — waiting to recover…')
@@ -1667,20 +1733,45 @@
       log('Publishing — speak clearly for transcript + translate')
     }
 
+    function waitForRemoteTrack(timeoutMs) {
+      return new Promise((resolve) => {
+        if (gotRemoteTrack) return resolve(true)
+        const start = Date.now()
+        const t = setInterval(() => {
+          if (gotRemoteTrack) {
+            clearInterval(t)
+            resolve(true)
+          } else if (Date.now() - start > timeoutMs) {
+            clearInterval(t)
+            resolve(false)
+          }
+        }, 200)
+      })
+    }
+
     async function startViewer() {
       isViewer = true
       publisherControls.classList.remove('is-open')
       publisherControls.style.display = 'none'
       if (joinHint) joinHint.textContent = 'Connecting to room…'
+      closePeer()
 
       const iceConfig = await loadIceConfig()
       pc = new RTCPeerConnection(iceConfig)
       attachFacesChannel()
-      pc.oniceconnectionstatechange = () => log('ICE: ' + pc.iceConnectionState)
+      pc.oniceconnectionstatechange = () => {
+        const st = pc.iceConnectionState
+        log('ICE: ' + st)
+        if (st === 'failed' || st === 'closed') {
+          log('Viewer link lost')
+          endSession({})
+        }
+      }
 
       pc.addTransceiver('video', { direction: 'recvonly' })
       pc.addTransceiver('audio', { direction: 'recvonly' })
-      const remoteStream = new MediaStream()
+      remoteStream = new MediaStream()
+      gotRemoteTrack = false
       video.srcObject = remoteStream
       video.muted = true
       video.setAttribute('playsinline', 'true')
@@ -1690,13 +1781,13 @@
       updateAudioStatus()
 
       pc.ontrack = (event) => {
+        gotRemoteTrack = true
         if (!remoteStream.getTrackById(event.track.id)) remoteStream.addTrack(event.track)
         event.track.enabled = true
         log('Got remote ' + event.track.kind)
         updateAudioStatus()
         video.play().catch(() => { tapPlay.style.display = 'block' })
         if (event.track.kind === 'audio') {
-          // Mobile browsers often block unmute until tap — show button.
           unmuteBtn.style.display = 'inline-block'
           tapPlay.style.display = 'block'
         } else if (!playArmed) {
@@ -1708,8 +1799,10 @@
       await pc.setLocalDescription(offer)
       await waitIceComplete(8000)
       await signalOffer('viewer')
+      const got = await waitForRemoteTrack(20000)
+      if (!got) throw new Error('Joined signaling but no media yet — try Join again')
       if (joinHint) joinHint.textContent = 'Joined — tap Enable sound if you hear nothing'
-      log('Joined')
+      log('Joined with media')
     }
 
     publishBtn.onclick = async () => {
@@ -1733,6 +1826,7 @@
         setSessionLive(true, 'host')
         log('Room live with ' + live.track_count + ' track(s)')
       } catch (e) {
+        closePeer()
         setSessionLive(false)
         const msg = 'Go live failed: ' + (e && e.message ? e.message : e)
         log(msg)
@@ -1741,7 +1835,7 @@
           camHint.textContent = msg
         }
         allowCamBtn.disabled = false
-        publishBtn.disabled = false
+        publishBtn.disabled = !(sharedStream && sharedStream.active)
         joinBtn.disabled = false
       }
     }
@@ -1773,10 +1867,11 @@
         joinBtn.textContent = 'Joined'
         setSessionLive(true, 'join')
       } catch (e) {
+        closePeer()
         setSessionLive(false)
         joinBtn.disabled = false
         joinBtn.textContent = 'Join live cast'
-        publishBtn.disabled = false
+        publishBtn.disabled = !(sharedStream && sharedStream.active)
         allowCamBtn.disabled = false
         showJoinError('Join failed: ' + (e && e.message ? e.message : e))
       } finally {
