@@ -560,6 +560,35 @@
     }
     #publisherControls { display: none; }
     #publisherControls.is-open { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+    .gate.is-live .setup-only { display: none !important; }
+    #liveBar {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      padding: 0.75rem 0.9rem;
+      border-radius: 12px;
+      border: 1px solid rgba(15, 118, 110, 0.28);
+      background: rgba(15, 118, 110, 0.08);
+    }
+    .gate.is-live #liveBar { display: flex; }
+    #liveBar strong {
+      font-size: 0.95rem;
+      color: var(--accent);
+    }
+    #liveBar span {
+      display: block;
+      font-size: 0.82rem;
+      color: var(--mute);
+      margin-top: 0.15rem;
+    }
+    .toast-ok {
+      color: var(--accent);
+      font-size: 0.86rem;
+      font-weight: 600;
+      min-height: 1.2rem;
+    }
 
     details.logs {
       border-radius: var(--radius);
@@ -639,18 +668,26 @@
       </div>
     </header>
 
-    <section class="panel gate" aria-label="Session setup">
-      <div class="mode-tabs" role="tablist">
+    <section class="panel gate" id="gatePanel" aria-label="Session setup">
+      <div class="mode-tabs setup-only" role="tablist">
         <button id="modeHostBtn" class="mode-tab is-on" type="button" role="tab" aria-selected="true">Host</button>
         <button id="modeJoinBtn" class="mode-tab" type="button" role="tab" aria-selected="false">Join</button>
       </div>
 
-      <div>
+      <div class="setup-only">
         <h2 id="gateTitle" class="gate-title">Host a live room</h2>
         <p id="gateCopy" class="gate-copy">Create or enter a room, allow camera, then go live.</p>
       </div>
 
-      <div class="room-gate">
+      <div id="liveBar" aria-live="polite">
+        <div>
+          <strong id="liveBarTitle">You're live</strong>
+          <span id="liveBarCopy">Share the room code with viewers</span>
+        </div>
+        <button id="copyLiveLinkBtn" class="btn-ghost" type="button">Copy link</button>
+      </div>
+
+      <div class="room-gate setup-only">
         <label for="roomId">Room code</label>
         <div class="room-row">
           <input id="roomId" type="text" maxlength="24" placeholder="type room code" autocomplete="off" spellcheck="false" inputmode="text">
@@ -663,7 +700,7 @@
       </div>
 
       <div id="hostPanel" class="role-panel is-on">
-        <div class="actions-row">
+        <div class="actions-row setup-only">
           <button id="allowCamBtn" class="btn-primary" type="button">Allow camera</button>
           <button id="publishBtn" class="btn-accent" type="button" disabled>Go live</button>
         </div>
@@ -676,8 +713,10 @@
       </div>
 
       <div id="joinPanel" class="role-panel">
-        <div class="actions-row">
+        <div class="actions-row setup-only">
           <button id="joinBtn" class="btn-accent" type="button">Join live cast</button>
+        </div>
+        <div class="actions-row">
           <button id="unmuteBtn" class="btn-ghost" type="button" style="display:none">Enable sound</button>
         </div>
         <div id="joinHint" class="toast-err"></div>
@@ -799,6 +838,51 @@
     const stopShareBtn = document.getElementById('stopShareBtn')
     const muteMicBtn = document.getElementById('muteMicBtn')
     const publisherControls = document.getElementById('publisherControls')
+    const gatePanel = document.getElementById('gatePanel')
+    const liveBarTitle = document.getElementById('liveBarTitle')
+    const liveBarCopy = document.getElementById('liveBarCopy')
+    const copyLiveLinkBtn = document.getElementById('copyLiveLinkBtn')
+    let sessionLive = false
+
+    function setSessionLive(on, role) {
+      sessionLive = !!on
+      if (gatePanel) gatePanel.classList.toggle('is-live', sessionLive)
+      const room = currentRoom()
+      if (sessionLive) {
+        const isJoin = role === 'join' || uiMode === 'join'
+        if (liveBarTitle) liveBarTitle.textContent = isJoin ? 'Watching live' : "You're live"
+        if (liveBarCopy) {
+          liveBarCopy.textContent = room
+            ? ('Room ' + room + (isJoin ? ' · tap Enable sound if needed' : ' · share Copy link with viewers'))
+            : 'Session connected'
+        }
+        if (camHint) {
+          camHint.className = 'toast-ok'
+          camHint.textContent = ''
+        }
+        if (joinHint && isJoin) {
+          joinHint.className = 'toast-ok'
+          joinHint.textContent = room ? ('Joined room ' + room) : 'Joined'
+        }
+      } else if (camHint) {
+        camHint.className = 'toast-err'
+      }
+    }
+
+    async function copyViewerLink() {
+      const r = currentRoom() || validateRoom({ required: true })
+      if (!r) return
+      const link = location.origin + '/?room=' + encodeURIComponent(r) + '&mode=join'
+      try {
+        await navigator.clipboard.writeText(link)
+        if (liveBarCopy && sessionLive) liveBarCopy.textContent = 'Viewer link copied'
+        else if (roomHint) roomHint.textContent = 'Viewer link copied'
+        log('Copied: ' + link)
+      } catch (_) {
+        if (roomHint) roomHint.textContent = link
+        log('Share link: ' + link)
+      }
+    }
 
     function isLocalHost() {
       const h = location.hostname
@@ -913,6 +997,7 @@
     }
 
     function setMode(mode) {
+      if (sessionLive) return
       uiMode = mode === 'join' ? 'join' : 'host'
       modeHostBtn.classList.toggle('is-on', uiMode === 'host')
       modeJoinBtn.classList.toggle('is-on', uiMode === 'join')
@@ -986,19 +1071,8 @@
         showRoomError('New room failed — try again')
       }
     }
-    copyRoomBtn.onclick = async () => {
-      const r = validateRoom({ required: true })
-      if (!r) return
-      const link = location.origin + '/?room=' + encodeURIComponent(r) + '&mode=join'
-      try {
-        await navigator.clipboard.writeText(link)
-        roomHint.textContent = 'Viewer link copied'
-        log('Copied: ' + link)
-      } catch (_) {
-        roomHint.textContent = link
-        log('Share link: ' + link)
-      }
-    }
+    copyRoomBtn.onclick = () => { copyViewerLink() }
+    if (copyLiveLinkBtn) copyLiveLinkBtn.onclick = () => { copyViewerLink() }
     roomIdInput.addEventListener('input', () => {
       roomIdInput.value = roomIdInput.value.replace(/\s+/g, '').toLowerCase()
       clearRoomError()
@@ -1656,12 +1730,16 @@
           }
           throw new Error('Media did not reach server — Go live again (TURN/network). Keep this room code.')
         }
-        if (camHint) camHint.textContent = 'Live · room ' + room
+        setSessionLive(true, 'host')
         log('Room live with ' + live.track_count + ' track(s)')
       } catch (e) {
+        setSessionLive(false)
         const msg = 'Go live failed: ' + (e && e.message ? e.message : e)
         log(msg)
-        if (camHint) camHint.textContent = msg
+        if (camHint) {
+          camHint.className = 'toast-err'
+          camHint.textContent = msg
+        }
         allowCamBtn.disabled = false
         publishBtn.disabled = false
         joinBtn.disabled = false
@@ -1693,8 +1771,9 @@
         joinBtn.textContent = 'Joining…'
         await startViewer()
         joinBtn.textContent = 'Joined'
-        if (joinHint) joinHint.textContent = 'Joined room ' + room
+        setSessionLive(true, 'join')
       } catch (e) {
+        setSessionLive(false)
         joinBtn.disabled = false
         joinBtn.textContent = 'Join live cast'
         publishBtn.disabled = false
