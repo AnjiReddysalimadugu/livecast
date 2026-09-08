@@ -314,9 +314,8 @@ func main() {
 	}
 	_ = saveTranslateConfig(loadTranslateConfig())
 
-	peerConnectionConfig := webrtc.Configuration{
-		ICEServers: loadICEServers(),
-	}
+	// Do NOT block listen on Metered TURN fetch — Render health checks need the port open ASAP.
+	peerConnectionConfig := webrtc.Configuration{}
 	api := newAPI()
 	rooms := newRoomManager(api, peerConnectionConfig, events)
 
@@ -326,6 +325,7 @@ func main() {
 	if *https {
 		scheme = "https"
 	}
+	fmt.Printf("listening on %s (health: /healthz)\n", addr)
 	fmt.Printf("Open %s://127.0.0.1:%d (listen %s)\n", scheme, *port, addr)
 	fmt.Println("Multi-session: use ?room=<id> — max", maxRooms, "rooms")
 	if *https {
@@ -336,6 +336,12 @@ func main() {
 		fmt.Println("Localhost only — Windows Firewall popup will not appear.")
 		fmt.Println("For phone/LAN camera: broadcast.exe -port 8081 -listen 0.0.0.0")
 	}
+
+	// Warm ICE/TURN in background after port is open.
+	go func() {
+		servers := loadICEServers()
+		fmt.Printf("ICE warm done: %d server(s) source=%s\n", len(servers), iceSource())
+	}()
 
 	for ex := range sdpChan {
 		go rooms.handleSignaling(ex)
@@ -717,6 +723,13 @@ func httpSDPServer(addr string, rooms *RoomManager, useHTTPS bool) chan sdpExcha
 	}
 
 	mux := http.NewServeMux()
+	// Fast health check for Render (must respond in <5s; no Metered/ICE work).
+	mux.HandleFunc("/healthz", func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Cache-Control", "no-store")
+		res.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		res.WriteHeader(http.StatusOK)
+		_, _ = res.Write([]byte("ok"))
+	})
 	mux.Handle("/", http.FileServer(http.Dir("web")))
 	mux.HandleFunc("/ice", func(res http.ResponseWriter, req *http.Request) {
 		writeJSON(res, iceServersJSON())

@@ -27,4 +27,5 @@ ENV RENDER=true \
     PYTHONUNBUFFERED=1
 
 EXPOSE 10000
-CMD ["/app/livecast", "-listen", "0.0.0.0", "-port", "10000"]
+# Bind $PORT from Render (default 10000). Shell form so env expands.
+CMD ["sh", "-c", "exec /app/livecast -listen 0.0.0.0 -port ${PORT:-10000}"]

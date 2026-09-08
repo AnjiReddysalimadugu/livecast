@@ -5,7 +5,7 @@
     plan: starter
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /
+    healthCheckPath: /healthz
     envVars:
       - key: LIVECAST_CLOUD
         value: "1"
@@ -13,6 +13,8 @@
         value: tiny
       - key: WHISPER_LANGUAGE
         value: en
+      # Free Metered Open Relay — required for WebRTC on Render (no public UDP).
+      # https://www.metered.ca/tools/openrelay/ → set in Render Dashboard:
       - key: METERED_DOMAIN
         sync: false
       - key: METERED_API_KEY
