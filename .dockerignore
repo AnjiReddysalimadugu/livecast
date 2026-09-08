@@ -1,0 +1,7 @@
+.git
+**/*.exe
+**/*.log
+**/certs/
+**/__pycache__/
+**/_*
+**/events.jsonl

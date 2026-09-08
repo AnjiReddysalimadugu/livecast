@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: livecast
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    envVars:
+      - key: LIVECAST_CLOUD
+        value: "1"
+      - key: WHISPER_MODEL
+        value: tiny
+      - key: WHISPER_LANGUAGE
+        value: en
