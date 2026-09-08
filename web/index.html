@@ -124,6 +124,154 @@
       color: var(--mute);
       white-space: nowrap;
     }
+    #roomStatus.is-ok { color: var(--ok); font-weight: 600; }
+    #roomStatus.is-bad { color: var(--danger); font-weight: 600; }
+
+    .gate {
+      padding: 1rem 1.1rem 1.15rem;
+      display: grid;
+      gap: 0.95rem;
+    }
+    .mode-tabs {
+      display: inline-grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.3rem;
+      padding: 0.3rem;
+      width: min(320px, 100%);
+      background: rgba(16, 24, 22, 0.05);
+      border-radius: 14px;
+      border: 1px solid var(--line);
+    }
+    .mode-tab {
+      min-height: 2.4rem;
+      border: 0;
+      background: transparent;
+      color: var(--mute);
+      box-shadow: none;
+      border-radius: 11px;
+      font-weight: 650;
+    }
+    .mode-tab.is-on {
+      background: var(--surface-2);
+      color: var(--ink);
+      box-shadow: 0 6px 16px rgba(16, 24, 22, 0.08);
+    }
+    .mode-tab:hover:not(:disabled) { transform: none; }
+
+    .gate-title {
+      margin: 0;
+      font-family: Fraunces, Georgia, serif;
+      font-size: 1.2rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+    .gate-copy {
+      margin: 0.2rem 0 0;
+      color: var(--mute);
+      font-size: 0.88rem;
+      line-height: 1.4;
+    }
+
+    .room-gate {
+      display: grid;
+      gap: 0.45rem;
+    }
+    .room-gate > label {
+      font-size: 0.72rem;
+      font-weight: 650;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--mute);
+    }
+    .room-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 0.45rem;
+      align-items: stretch;
+    }
+    .room-row input {
+      width: 100%;
+      min-height: 2.75rem;
+      border: 1px solid var(--line-strong);
+      border-radius: 12px;
+      background: var(--surface-2);
+      padding: 0.55rem 0.85rem;
+      font: inherit;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+      color: var(--ink);
+      outline: none;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .room-row input:focus {
+      border-color: rgba(14, 122, 108, 0.55);
+      box-shadow: 0 0 0 4px rgba(14, 122, 108, 0.12);
+    }
+    .room-row input.is-invalid {
+      border-color: rgba(180, 35, 24, 0.55);
+      box-shadow: 0 0 0 4px rgba(180, 35, 24, 0.1);
+      animation: shake 0.35s var(--ease);
+    }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-4px); }
+      75% { transform: translateX(4px); }
+    }
+    .field-hint {
+      margin: 0;
+      color: var(--mute);
+      font-size: 0.8rem;
+      line-height: 1.35;
+    }
+    .field-error {
+      margin: 0;
+      color: var(--danger);
+      font-size: 0.84rem;
+      font-weight: 650;
+      min-height: 1.2rem;
+    }
+    .field-error:empty { display: none; }
+
+    .role-panel { display: none; gap: 0.75rem; }
+    .role-panel.is-on { display: grid; }
+
+    .host-tools {
+      display: none;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      align-items: end;
+      padding-top: 0.15rem;
+      border-top: 1px solid var(--line);
+    }
+    .host-tools.is-on { display: flex; }
+    .host-tools .field {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      align-items: center;
+    }
+
+    .topbar .room-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.45rem 0.75rem;
+      border-radius: 999px;
+      background: var(--teal-soft);
+      color: var(--teal);
+      font-size: 0.8rem;
+      font-weight: 650;
+      max-width: min(360px, 100%);
+    }
+    .topbar .room-pill span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .topbar .room-pill.is-empty {
+      background: rgba(16, 24, 22, 0.05);
+      color: var(--mute);
+    }
 
     .workspace {
       display: grid;
@@ -386,7 +534,7 @@
       border-radius: 10px;
     }
     #publisherControls { display: none; }
-    #publisherControls.is-open { display: flex; }
+    #publisherControls.is-open { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 
     details.logs {
       border-radius: var(--radius);
@@ -438,15 +586,12 @@
     @media (max-width: 980px) {
       .workspace { grid-template-columns: 1fr; }
       .topbar { grid-template-columns: 1fr; }
-      .room-box { min-width: 0; }
-      #roomStatus { grid-column: 1 / -1; justify-self: start; padding: 0 0.55rem 0.35rem; }
     }
     @media (max-width: 640px) {
       .shell { width: min(100% - 1.1rem, 1240px); }
       .metrics { grid-template-columns: 1fr; }
-      .room-box { grid-template-columns: 1fr 1fr; }
-      .room-box label { grid-column: 1 / -1; padding-top: 0.25rem; }
-      .room-box input { grid-column: 1 / -1; padding: 0.2rem 0.55rem 0.45rem; }
+      .room-row { grid-template-columns: 1fr 1fr; }
+      .room-row input { grid-column: 1 / -1; }
       #joinBtn, #publishBtn, #allowCamBtn {
         width: 100%;
         min-height: 3rem;
@@ -464,16 +609,70 @@
         <h1 class="brand">Live<em>Cast</em></h1>
         <p class="tagline">Rooms · live captions · translation · face intelligence</p>
       </div>
-      <div>
-        <div class="room-box">
-          <label for="roomId">Room</label>
-          <input id="roomId" type="text" maxlength="24" placeholder="code" autocomplete="off" spellcheck="false">
-          <button id="newRoomBtn" class="btn-ghost btn-compact" type="button">New</button>
-          <button id="copyRoomBtn" class="btn-ghost btn-compact" type="button">Copy link</button>
-        </div>
-        <div id="roomStatus">Set a room to start</div>
+      <div id="roomPill" class="room-pill is-empty" title="Current room">
+        <span id="roomPillText">No room selected</span>
       </div>
     </header>
+
+    <section class="panel gate" aria-label="Session setup">
+      <div class="mode-tabs" role="tablist">
+        <button id="modeHostBtn" class="mode-tab is-on" type="button" role="tab" aria-selected="true">Host</button>
+        <button id="modeJoinBtn" class="mode-tab" type="button" role="tab" aria-selected="false">Join</button>
+      </div>
+
+      <div>
+        <h2 id="gateTitle" class="gate-title">Host a live room</h2>
+        <p id="gateCopy" class="gate-copy">Create or enter a room, allow camera, then go live.</p>
+      </div>
+
+      <div class="room-gate">
+        <label for="roomId">Room code</label>
+        <div class="room-row">
+          <input id="roomId" type="text" maxlength="24" placeholder="e.g. 6268dda4" autocomplete="off" spellcheck="false" inputmode="text">
+          <button id="newRoomBtn" class="btn-ghost" type="button">New room</button>
+          <button id="copyRoomBtn" class="btn-ghost" type="button">Copy link</button>
+        </div>
+        <p id="roomHint" class="field-hint">3–24 characters · letters, numbers, _ or -</p>
+        <p id="roomError" class="field-error" role="alert"></p>
+      </div>
+
+      <div id="hostPanel" class="role-panel is-on">
+        <div class="actions-row">
+          <button id="allowCamBtn" class="btn-primary" type="button">Allow camera</button>
+          <button id="publishBtn" class="btn-accent" type="button" disabled>Go live</button>
+        </div>
+        <div id="camHint" class="toast-err"></div>
+        <div id="publisherControls" class="actions-row">
+          <button id="screenBtn" class="btn-ghost" type="button">Share screen</button>
+          <button id="stopShareBtn" class="btn-ghost" type="button" disabled>Stop sharing</button>
+          <button id="muteMicBtn" class="btn-ghost" type="button">Mute mic</button>
+        </div>
+      </div>
+
+      <div id="joinPanel" class="role-panel">
+        <div class="actions-row">
+          <button id="joinBtn" class="btn-accent" type="button">Join live cast</button>
+          <button id="unmuteBtn" class="btn-ghost" type="button" style="display:none">Enable sound</button>
+        </div>
+        <div id="joinHint" class="toast-err"></div>
+      </div>
+
+      <div id="hostTools" class="host-tools is-on">
+        <div class="field">
+          <label for="windowSec">Unique face window</label>
+          <select id="windowSec">
+            <option value="60">1 minute</option>
+            <option value="300" selected>5 minutes</option>
+            <option value="900">15 minutes</option>
+            <option value="1800">30 minutes</option>
+            <option value="3600">1 hour</option>
+            <option value="custom">Custom…</option>
+          </select>
+          <input id="windowCustom" type="number" min="30" max="86400" placeholder="sec" style="width:4.2rem;display:none">
+          <button id="applyWindowBtn" class="btn-ghost btn-compact" type="button">Apply</button>
+        </div>
+      </div>
+    </section>
 
     <div class="workspace">
       <section class="panel stage-card">
@@ -531,36 +730,6 @@
         </section>
       </aside>
     </div>
-
-    <section class="panel actions">
-      <div class="actions-row">
-        <button id="allowCamBtn" class="btn-primary" type="button">Allow camera</button>
-        <button id="publishBtn" class="btn-accent" type="button" disabled>Publish</button>
-        <button id="joinBtn" class="btn-ghost" type="button">Join broadcast</button>
-        <button id="unmuteBtn" class="btn-ghost" type="button" style="display:none">Enable sound</button>
-      </div>
-      <div id="camHint" class="toast-err"></div>
-      <div class="actions-row secondary">
-        <div class="field">
-          <label for="windowSec">Unique window</label>
-          <select id="windowSec">
-            <option value="60">1 minute</option>
-            <option value="300" selected>5 minutes</option>
-            <option value="900">15 minutes</option>
-            <option value="1800">30 minutes</option>
-            <option value="3600">1 hour</option>
-            <option value="custom">Custom…</option>
-          </select>
-          <input id="windowCustom" type="number" min="30" max="86400" placeholder="sec" style="width:4.2rem;display:none">
-          <button id="applyWindowBtn" class="btn-ghost btn-compact" type="button">Apply</button>
-        </div>
-        <div id="publisherControls" class="actions-row">
-          <button id="screenBtn" class="btn-ghost" type="button">Share screen</button>
-          <button id="stopShareBtn" class="btn-ghost" type="button" disabled>Stop sharing</button>
-          <button id="muteMicBtn" class="btn-ghost" type="button">Mute mic</button>
-        </div>
-      </div>
-    </section>
 
     <p id="answerStatus"></p>
     <div id="answerBox"></div>
@@ -636,28 +805,110 @@
     const roomIdInput = document.getElementById('roomId')
     const newRoomBtn = document.getElementById('newRoomBtn')
     const copyRoomBtn = document.getElementById('copyRoomBtn')
-    const roomStatus = document.getElementById('roomStatus')
+    const roomError = document.getElementById('roomError')
+    const roomHint = document.getElementById('roomHint')
+    const roomPill = document.getElementById('roomPill')
+    const roomPillText = document.getElementById('roomPillText')
+    const modeHostBtn = document.getElementById('modeHostBtn')
+    const modeJoinBtn = document.getElementById('modeJoinBtn')
+    const hostPanel = document.getElementById('hostPanel')
+    const joinPanel = document.getElementById('joinPanel')
+    const hostTools = document.getElementById('hostTools')
+    const gateTitle = document.getElementById('gateTitle')
+    const gateCopy = document.getElementById('gateCopy')
+    const joinHint = document.getElementById('joinHint')
 
+    const ROOM_RE = /^[a-zA-Z0-9_-]{3,24}$/
     let roomId = ''
+    let uiMode = 'host' // host | join
+
     const params = new URLSearchParams(location.search)
     if (params.get('room')) {
-      roomId = params.get('room')
+      roomId = String(params.get('room')).trim().toLowerCase()
       roomIdInput.value = roomId
-      roomStatus.textContent = 'Active · ' + roomId
+    }
+    if (params.get('mode') === 'join' || (params.get('room') && params.get('join') === '1')) {
+      uiMode = 'join'
+    }
+
+    function clearRoomError() {
+      roomError.textContent = ''
+      roomIdInput.classList.remove('is-invalid')
+      if (joinHint) joinHint.textContent = ''
+    }
+
+    function showRoomError(msg) {
+      roomError.textContent = msg
+      roomIdInput.classList.add('is-invalid')
+      roomIdInput.focus()
+      log(msg)
+      return null
     }
 
     function currentRoom() {
-      return (roomIdInput.value || roomId || '').trim()
+      return (roomIdInput.value || roomId || '').trim().toLowerCase()
     }
 
     function setRoom(id) {
-      roomId = (id || '').trim()
+      roomId = String(id || '').trim().toLowerCase()
       roomIdInput.value = roomId
-      roomStatus.textContent = roomId ? ('Active · ' + roomId) : 'Set a room to start'
+      clearRoomError()
+      if (roomId) {
+        roomPill.classList.remove('is-empty')
+        roomPillText.textContent = 'Room ' + roomId
+      } else {
+        roomPill.classList.add('is-empty')
+        roomPillText.textContent = 'No room selected'
+      }
       const url = new URL(location.href)
       if (roomId) url.searchParams.set('room', roomId)
       else url.searchParams.delete('room')
+      if (uiMode === 'join') url.searchParams.set('mode', 'join')
+      else url.searchParams.delete('mode')
       history.replaceState(null, '', url)
+    }
+
+    function validateRoom({ required = true, autoFocus = true } = {}) {
+      const id = currentRoom()
+      if (!id) {
+        if (!required) return ''
+        if (autoFocus) roomIdInput.focus()
+        return showRoomError(uiMode === 'join'
+          ? 'Enter the room code to join'
+          : 'Enter a room code, or click New room')
+      }
+      if (!ROOM_RE.test(id)) {
+        return showRoomError('Invalid room code — use 3–24 letters, numbers, _ or -')
+      }
+      clearRoomError()
+      setRoom(id)
+      return id
+    }
+
+    function setMode(mode) {
+      uiMode = mode === 'join' ? 'join' : 'host'
+      modeHostBtn.classList.toggle('is-on', uiMode === 'host')
+      modeJoinBtn.classList.toggle('is-on', uiMode === 'join')
+      modeHostBtn.setAttribute('aria-selected', uiMode === 'host' ? 'true' : 'false')
+      modeJoinBtn.setAttribute('aria-selected', uiMode === 'join' ? 'true' : 'false')
+      hostPanel.classList.toggle('is-on', uiMode === 'host')
+      joinPanel.classList.toggle('is-on', uiMode === 'join')
+      hostTools.classList.toggle('is-on', uiMode === 'host')
+      newRoomBtn.style.display = uiMode === 'host' ? '' : 'none'
+      if (uiMode === 'host') {
+        gateTitle.textContent = 'Host a live room'
+        gateCopy.textContent = 'Create or enter a room, allow camera, then go live.'
+        roomHint.textContent = 'Host: New room creates a fresh code. Share the link with viewers.'
+      } else {
+        gateTitle.textContent = 'Join a live cast'
+        gateCopy.textContent = 'Paste the room code from the host link, then join.'
+        roomHint.textContent = 'Join needs the exact room code from the host (or open their Copy link URL).'
+      }
+      const url = new URL(location.href)
+      if (uiMode === 'join') url.searchParams.set('mode', 'join')
+      else url.searchParams.delete('mode')
+      history.replaceState(null, '', url)
+      clearRoomError()
     }
 
     function roomQS() {
@@ -665,30 +916,55 @@
       return r ? ('room=' + encodeURIComponent(r) + '&') : ''
     }
 
+    modeHostBtn.onclick = () => setMode('host')
+    modeJoinBtn.onclick = () => setMode('join')
+
     newRoomBtn.onclick = async () => {
       try {
+        clearRoomError()
         const res = await fetch('/room/new', { method: 'POST' })
+        if (!res.ok) throw new Error('Could not create room')
         const data = await res.json()
+        if (!data.room) throw new Error('Server returned empty room')
         setRoom(data.room)
+        setMode('host')
         log('New room: ' + data.room)
       } catch (e) {
-        log('New room failed: ' + e)
+        showRoomError('New room failed — try again')
       }
     }
     copyRoomBtn.onclick = async () => {
-      const r = currentRoom()
-      if (!r) { log('Set a room first'); return }
-      setRoom(r)
+      const r = validateRoom({ required: true })
+      if (!r) return
       const link = location.origin + '/?room=' + encodeURIComponent(r)
       try {
         await navigator.clipboard.writeText(link)
+        roomHint.textContent = 'Link copied — share with viewers'
         log('Copied: ' + link)
       } catch (_) {
+        roomHint.textContent = link
         log('Share link: ' + link)
       }
     }
-    roomIdInput.onchange = () => setRoom(roomIdInput.value)
-    roomIdInput.onkeydown = (e) => { if (e.key === 'Enter') setRoom(roomIdInput.value) }
+    roomIdInput.addEventListener('input', () => {
+      roomIdInput.value = roomIdInput.value.replace(/\s+/g, '').toLowerCase()
+      clearRoomError()
+    })
+    roomIdInput.addEventListener('change', () => {
+      const id = currentRoom()
+      if (!id) { setRoom(''); return }
+      validateRoom({ required: true })
+    })
+    roomIdInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        if (uiMode === 'join') onJoinClick()
+        else validateRoom({ required: true })
+      }
+    })
+
+    setMode(uiMode)
+    if (roomId) setRoom(roomId)
 
     let pc, videoSender, audioSender
     let sharedStream = null, screenStream = null
@@ -1157,10 +1433,9 @@
 
     function showJoinError(msg) {
       log(msg)
+      if (joinHint) joinHint.textContent = msg
       const logs = document.querySelector('details.logs')
       if (logs) logs.open = true
-      if (camHint) camHint.textContent = msg
-      try { alert(msg) } catch (_) {}
     }
 
     async function startPublisher() {
@@ -1235,7 +1510,7 @@
       isViewer = true
       publisherControls.classList.remove('is-open')
       publisherControls.style.display = 'none'
-      if (camHint) camHint.textContent = 'Joining room…'
+      if (joinHint) joinHint.textContent = 'Connecting to room…'
 
       const iceConfig = await loadIceConfig()
       pc = new RTCPeerConnection(iceConfig)
@@ -1272,15 +1547,22 @@
       await pc.setLocalDescription(offer)
       await waitIceComplete(8000)
       await signalOffer('viewer')
-      if (camHint) camHint.textContent = 'Joined — tap video / Enable sound if needed'
+      if (joinHint) joinHint.textContent = 'Joined — tap Enable sound if you hear nothing'
       log('Joined')
     }
 
     publishBtn.onclick = async () => {
       try {
-        if (!currentRoom()) {
+        setMode('host')
+        let room = currentRoom()
+        if (room) {
+          room = validateRoom({ required: true })
+          if (!room) return
+        } else {
           const res = await fetch('/room/new', { method: 'POST' })
+          if (!res.ok) throw new Error('Could not create room')
           const data = await res.json()
+          if (!data.room) throw new Error('Empty room from server')
           setRoom(data.room)
           log('Auto room: ' + data.room)
         }
@@ -1289,7 +1571,9 @@
         joinBtn.disabled = true
         await startPublisher()
       } catch (e) {
-        log('Publish failed: ' + e)
+        const msg = 'Go live failed: ' + (e && e.message ? e.message : e)
+        log(msg)
+        if (camHint) camHint.textContent = msg
         allowCamBtn.disabled = false
         publishBtn.disabled = false
         joinBtn.disabled = false
@@ -1300,15 +1584,18 @@
       if (joinBtn.dataset.busy === '1') return
       joinBtn.dataset.busy = '1'
       try {
-        if (!currentRoom()) throw new Error('Room code missing — open the Copy link URL, or type the room code')
+        setMode('join')
+        const room = validateRoom({ required: true })
+        if (!room) return
         joinBtn.disabled = true
         joinBtn.textContent = 'Joining…'
         publishBtn.disabled = true
         await startViewer()
         joinBtn.textContent = 'Joined'
+        if (joinHint) joinHint.textContent = 'Joined room ' + room
       } catch (e) {
         joinBtn.disabled = false
-        joinBtn.textContent = 'Join broadcast'
+        joinBtn.textContent = 'Join live cast'
         publishBtn.disabled = false
         allowCamBtn.disabled = false
         showJoinError('Join failed: ' + (e && e.message ? e.message : e))
