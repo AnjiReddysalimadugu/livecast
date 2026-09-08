@@ -385,27 +385,24 @@ func (rm *RoomManager) publish(ex sdpExchange) {
 
 	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
 		fmt.Printf("room %s publisher ICE: %s\n", r.ID, s.String())
-		if s == webrtc.ICEConnectionStateFailed ||
-			s == webrtc.ICEConnectionStateClosed ||
-			s == webrtc.ICEConnectionStateDisconnected {
-			// Allow brief blips; remove after short delay if still dead.
-			go func() {
-				time.Sleep(3 * time.Second)
-				r.mu.Lock()
-				alive := r.publisherPC == pc
-				r.mu.Unlock()
-				if !alive {
-					return
-				}
-				st := pc.ICEConnectionState()
-				if st == webrtc.ICEConnectionStateFailed ||
-					st == webrtc.ICEConnectionStateClosed ||
-					st == webrtc.ICEConnectionStateDisconnected {
-					fmt.Printf("room %s: publisher gone — closing room\n", r.ID)
-					rm.remove(r.ID)
-				}
-			}()
+		// "disconnected" is often a brief blip (esp. on cloud). Only tear down on failed/closed.
+		if s != webrtc.ICEConnectionStateFailed && s != webrtc.ICEConnectionStateClosed {
+			return
 		}
+		go func() {
+			time.Sleep(8 * time.Second)
+			r.mu.Lock()
+			alive := r.publisherPC == pc
+			r.mu.Unlock()
+			if !alive {
+				return
+			}
+			st := pc.ICEConnectionState()
+			if st == webrtc.ICEConnectionStateFailed || st == webrtc.ICEConnectionStateClosed {
+				fmt.Printf("room %s: publisher gone — closing room\n", r.ID)
+				rm.remove(r.ID)
+			}
+		}()
 	})
 }
 

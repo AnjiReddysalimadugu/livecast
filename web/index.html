@@ -1056,6 +1056,34 @@
       }
     }
 
+    async function loadIceConfig() {
+      try {
+        const res = await fetch('/ice', { cache: 'no-store' })
+        if (!res.ok) throw new Error('ice http ' + res.status)
+        const iceServers = await res.json()
+        if (Array.isArray(iceServers) && iceServers.length) {
+          log('ICE servers: ' + iceServers.length)
+          return { iceServers }
+        }
+      } catch (e) {
+        log('ICE config fallback: ' + e)
+      }
+      return {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          {
+            urls: [
+              'turn:openrelay.metered.ca:80',
+              'turn:openrelay.metered.ca:443?transport=tcp',
+              'turns:openrelay.metered.ca:443?transport=tcp'
+            ],
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+          }
+        ]
+      }
+    }
+
     function waitIceComplete(timeoutMs = 2500) {
       return new Promise((resolve) => {
         if (!pc || pc.iceGatheringState === 'complete') return resolve()
@@ -1080,11 +1108,12 @@
       const sdp = btoa(unescape(encodeURIComponent(JSON.stringify(pc.localDescription))))
       log('Signaling (' + role + ') room=' + room + '…')
 
-      // 1) Try WebSocket
-      try {
+      // Prefer HTTP on cloud hosts (Render WS upgrade is flaky with this stack).
+      const preferHTTP = /onrender\.com$/i.test(location.hostname) || location.search.includes('httpSignal=1')
+      const tryWS = async () => {
         const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws')
         await new Promise((resolve, reject) => {
-          const t = setTimeout(() => reject(new Error('WS open timeout')), 8000)
+          const t = setTimeout(() => reject(new Error('WS open timeout')), 5000)
           ws.onopen = () => { clearTimeout(t); resolve() }
           ws.onerror = () => { clearTimeout(t); reject(new Error('WebSocket failed')) }
         })
@@ -1099,22 +1128,31 @@
         const remote = JSON.parse(decodeURIComponent(escape(atob(reply.sdp))))
         await pc.setRemoteDescription(remote)
         log('Connected via WebSocket · room ' + room)
-        return
-      } catch (wsErr) {
-        log('WS failed (' + wsErr + ') — trying HTTP…')
       }
 
-      // 2) HTTP fallback (more reliable on mobile + self-signed HTTPS)
-      const res = await fetch('/sdp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sdp, role, room })
-      })
-      const bodyText = await res.text()
-      if (!res.ok) throw new Error(bodyText || ('HTTP ' + res.status))
-      const remote = JSON.parse(decodeURIComponent(escape(atob(bodyText))))
-      await pc.setRemoteDescription(remote)
-      log('Connected via HTTP · room ' + room)
+      const tryHTTP = async () => {
+        const res = await fetch('/sdp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sdp, role, room })
+        })
+        const bodyText = await res.text()
+        if (!res.ok) throw new Error(bodyText || ('HTTP ' + res.status))
+        const remote = JSON.parse(decodeURIComponent(escape(atob(bodyText))))
+        await pc.setRemoteDescription(remote)
+        log('Connected via HTTP · room ' + room)
+      }
+
+      if (preferHTTP) {
+        await tryHTTP()
+        return
+      }
+      try {
+        await tryWS()
+      } catch (wsErr) {
+        log('WS failed (' + wsErr + ') — trying HTTP…')
+        await tryHTTP()
+      }
     }
 
     function showJoinError(msg) {
@@ -1134,20 +1172,28 @@
       transcriptStatus.textContent = 'connecting…'
       translateStatus.textContent = 'waiting…'
 
-      pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
+      const iceConfig = await loadIceConfig()
+      pc = new RTCPeerConnection(iceConfig)
       attachFacesChannel()
+      let iceDeadTimer = null
       pc.oniceconnectionstatechange = () => {
-        log('ICE: ' + pc.iceConnectionState)
-        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed' ||
-            pc.iceConnectionState === 'disconnected') {
-          log('Publisher link lost — click Publish again')
-          publishBtn.disabled = false
-          joinBtn.disabled = false
-          allowCamBtn.disabled = false
-          publisherControls.classList.remove('is-open')
-          publisherControls.style.display = 'none'
-          faceStatus.textContent = 'offline'
-          faceStatus.className = 'no'
+        const st = pc.iceConnectionState
+        log('ICE: ' + st)
+        if (iceDeadTimer) { clearTimeout(iceDeadTimer); iceDeadTimer = null }
+        if (st === 'failed' || st === 'closed') {
+          iceDeadTimer = setTimeout(() => {
+            if (!pc || (pc.iceConnectionState !== 'failed' && pc.iceConnectionState !== 'closed')) return
+            log('Publisher link lost — click Publish again')
+            publishBtn.disabled = false
+            joinBtn.disabled = false
+            allowCamBtn.disabled = false
+            publisherControls.classList.remove('is-open')
+            publisherControls.style.display = 'none'
+            faceStatus.textContent = 'offline'
+            faceStatus.className = 'no'
+          }, 8000)
+        } else if (st === 'disconnected') {
+          log('ICE blip (disconnected) — waiting to recover…')
         }
       }
 
@@ -1174,7 +1220,7 @@
 
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
-      await waitIceComplete(2500)
+      await waitIceComplete(8000)
       await signalOffer('publisher')
 
       publisherControls.classList.add('is-open')
@@ -1191,7 +1237,8 @@
       publisherControls.style.display = 'none'
       if (camHint) camHint.textContent = 'Joining room…'
 
-      pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
+      const iceConfig = await loadIceConfig()
+      pc = new RTCPeerConnection(iceConfig)
       attachFacesChannel()
       pc.oniceconnectionstatechange = () => log('ICE: ' + pc.iceConnectionState)
 
@@ -1223,7 +1270,7 @@
 
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
-      await waitIceComplete(2500)
+      await waitIceComplete(8000)
       await signalOffer('viewer')
       if (camHint) camHint.textContent = 'Joined — tap video / Enable sound if needed'
       log('Joined')

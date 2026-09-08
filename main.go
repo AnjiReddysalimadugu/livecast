@@ -234,9 +234,20 @@ func newAPI() *webrtc.API {
 	}
 	interceptorRegistry.Add(pli)
 
+	se := webrtc.SettingEngine{}
+	// Help PaaS / strict NAT paths (TURN over TCP).
+	se.SetNetworkTypes([]webrtc.NetworkType{
+		webrtc.NetworkTypeUDP4,
+		webrtc.NetworkTypeUDP6,
+		webrtc.NetworkTypeTCP4,
+		webrtc.NetworkTypeTCP6,
+	})
+	se.SetICETimeouts(5*time.Second, 10*time.Second, 2*time.Second)
+
 	return webrtc.NewAPI(
 		webrtc.WithMediaEngine(mediaEngine),
 		webrtc.WithInterceptorRegistry(interceptorRegistry),
+		webrtc.WithSettingEngine(se),
 	)
 }
 
@@ -315,10 +326,41 @@ func loadICEServers() []webrtc.ICEServer {
 	servers := []webrtc.ICEServer{
 		{URLs: []string{"stun:stun.l.google.com:19302"}},
 		{URLs: []string{"stun:stun.cloudflare.com:3478"}},
+		{URLs: []string{"stun:stun.relay.metered.ca:80"}},
 	}
+
+	// Preferred: Metered Open Relay REST (free API key).
+	if key := strings.TrimSpace(os.Getenv("METERED_DOMAIN")); key != "" {
+		apiKey := strings.TrimSpace(os.Getenv("METERED_API_KEY"))
+		if apiKey != "" {
+			if fetched, err := fetchMeteredICE(key, apiKey); err != nil {
+				fmt.Printf("ICE: metered fetch failed: %v\n", err)
+			} else if len(fetched) > 0 {
+				fmt.Printf("ICE: Metered Open Relay (%d servers)\n", len(fetched))
+				return fetched
+			}
+		}
+	}
+
 	turnURLs := strings.TrimSpace(os.Getenv("TURN_URLS"))
 	turnUser := strings.TrimSpace(os.Getenv("TURN_USERNAME"))
 	turnPass := strings.TrimSpace(os.Getenv("TURN_CREDENTIAL"))
+	if turnURLs == "" {
+		// Cloud-friendly defaults (TCP/TLS TURN). May require METERED_API_KEY if auth rejected.
+		turnURLs = strings.Join([]string{
+			"turn:openrelay.metered.ca:80",
+			"turn:openrelay.metered.ca:80?transport=tcp",
+			"turn:openrelay.metered.ca:443",
+			"turn:openrelay.metered.ca:443?transport=tcp",
+			"turns:openrelay.metered.ca:443?transport=tcp",
+		}, ",")
+		if turnUser == "" {
+			turnUser = "openrelayproject"
+		}
+		if turnPass == "" {
+			turnPass = "openrelayproject"
+		}
+	}
 	if turnURLs != "" && turnUser != "" && turnPass != "" {
 		urls := []string{}
 		for _, u := range strings.Split(turnURLs, ",") {
@@ -337,8 +379,70 @@ func loadICEServers() []webrtc.ICEServer {
 			return servers
 		}
 	}
-	fmt.Println("ICE: STUN only — set TURN_URLS/TURN_USERNAME/TURN_CREDENTIAL for cross-network joins")
+	fmt.Println("ICE: STUN only — set METERED_API_KEY or TURN_* for Render/cross-network")
 	return servers
+}
+
+func fetchMeteredICE(domain, apiKey string) ([]webrtc.ICEServer, error) {
+	domain = strings.TrimSuffix(domain, "/")
+	domain = strings.TrimPrefix(domain, "https://")
+	domain = strings.TrimPrefix(domain, "http://")
+	url := fmt.Sprintf("https://%s/api/v1/turn/credentials?apiKey=%s", domain, apiKey)
+	client := &http.Client{Timeout: 8 * time.Second}
+	res, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("status %d: %s", res.StatusCode, string(b))
+	}
+	var raw []map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
+		return nil, err
+	}
+	out := make([]webrtc.ICEServer, 0, len(raw))
+	for _, item := range raw {
+		urls := []string{}
+		switch v := item["urls"].(type) {
+		case string:
+			urls = append(urls, v)
+		case []any:
+			for _, u := range v {
+				if s, ok := u.(string); ok {
+					urls = append(urls, s)
+				}
+			}
+		}
+		if len(urls) == 0 {
+			continue
+		}
+		srv := webrtc.ICEServer{URLs: urls}
+		if u, ok := item["username"].(string); ok {
+			srv.Username = u
+		}
+		if c, ok := item["credential"].(string); ok {
+			srv.Credential = c
+		}
+		out = append(out, srv)
+	}
+	return out, nil
+}
+
+func iceServersJSON() []byte {
+	servers := loadICEServers()
+	type iceJSON struct {
+		URLs       []string `json:"urls"`
+		Username   string   `json:"username,omitempty"`
+		Credential string   `json:"credential,omitempty"`
+	}
+	out := make([]iceJSON, 0, len(servers))
+	for _, s := range servers {
+		out = append(out, iceJSON{URLs: s.URLs, Username: s.Username, Credential: fmt.Sprint(s.Credential)})
+	}
+	b, _ := json.Marshal(out)
+	return b
 }
 
 func roomFromRequest(req *http.Request, rooms *RoomManager) *Room {
@@ -527,6 +631,9 @@ func httpSDPServer(addr string, rooms *RoomManager, useHTTPS bool) chan sdpExcha
 
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir("web")))
+	mux.HandleFunc("/ice", func(res http.ResponseWriter, req *http.Request) {
+		writeJSON(res, iceServersJSON())
+	})
 	mux.HandleFunc("/rooms", func(res http.ResponseWriter, req *http.Request) {
 		b, _ := json.Marshal(map[string]any{"rooms": rooms.list(), "max": maxRooms})
 		writeJSON(res, b)
