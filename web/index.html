@@ -590,6 +590,57 @@
       min-height: 1.2rem;
     }
 
+    #sessionLoader {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+      background: rgba(16, 24, 22, 0.42);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    #sessionLoader.is-on { display: flex; }
+    .loader-card {
+      width: min(100%, 22rem);
+      text-align: center;
+      padding: 1.6rem 1.35rem 1.4rem;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.35);
+      background: rgba(255,255,255,0.94);
+      box-shadow: 0 24px 50px rgba(16, 24, 22, 0.22);
+      animation: loaderIn 0.35s var(--ease) both;
+    }
+    @keyframes loaderIn {
+      from { opacity: 0; transform: translateY(10px) scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+    .spinner {
+      width: 2.4rem;
+      height: 2.4rem;
+      margin: 0 auto 1rem;
+      border-radius: 50%;
+      border: 3px solid rgba(14, 122, 108, 0.18);
+      border-top-color: var(--teal);
+      animation: spin 0.75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loader-card strong {
+      display: block;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--ink);
+      margin-bottom: 0.35rem;
+    }
+    .loader-card p {
+      margin: 0;
+      font-size: 0.88rem;
+      color: var(--mute);
+      line-height: 1.4;
+    }
+
     details.logs {
       border-radius: var(--radius);
       border: 1px solid var(--line);
@@ -656,6 +707,13 @@
   </style>
 </head>
 <body>
+  <div id="sessionLoader" aria-live="assertive" aria-busy="false" hidden>
+    <div class="loader-card">
+      <div class="spinner" aria-hidden="true"></div>
+      <strong id="loaderTitle">Entering room…</strong>
+      <p id="loaderCopy">Connecting camera and media</p>
+    </div>
+  </div>
   <div class="shell">
     <div id="secureBanner" class="banner" role="status"></div>
     <header class="topbar">
@@ -846,9 +904,28 @@
     const liveBarCopy = document.getElementById('liveBarCopy')
     const copyLiveLinkBtn = document.getElementById('copyLiveLinkBtn')
     const endSessionBtn = document.getElementById('endSessionBtn')
+    const sessionLoader = document.getElementById('sessionLoader')
+    const loaderTitle = document.getElementById('loaderTitle')
+    const loaderCopy = document.getElementById('loaderCopy')
     let sessionLive = false
     let remoteStream = null
     let gotRemoteTrack = false
+
+    function showLoader(title, copy) {
+      if (!sessionLoader) return
+      if (loaderTitle) loaderTitle.textContent = title || 'Please wait…'
+      if (loaderCopy) loaderCopy.textContent = copy || ''
+      sessionLoader.hidden = false
+      sessionLoader.classList.add('is-on')
+      sessionLoader.setAttribute('aria-busy', 'true')
+    }
+
+    function hideLoader() {
+      if (!sessionLoader) return
+      sessionLoader.classList.remove('is-on')
+      sessionLoader.hidden = true
+      sessionLoader.setAttribute('aria-busy', 'false')
+    }
 
     function closePeer() {
       try {
@@ -898,6 +975,7 @@
       if (joinHint) { joinHint.className = 'toast-err'; joinHint.textContent = '' }
       faceStatus.textContent = 'waiting…'
       faceStatus.className = 'no'
+      hideLoader()
       log(room ? ('Ended session · room ' + room + ' kept') : 'Ended session')
     }
 
@@ -1813,9 +1891,10 @@
         allowCamBtn.disabled = true
         publishBtn.disabled = true
         joinBtn.disabled = true
-        if (camHint) camHint.textContent = 'Going live…'
+        showLoader('Entering room…', 'Room ' + room + ' · connecting camera')
+        if (camHint) camHint.textContent = ''
         await startPublisher()
-        if (camHint) camHint.textContent = 'Waiting for media on server…'
+        showLoader('Going live…', 'Waiting for media on server — keep this tab open')
         const live = await waitUntilLive(room, 50000)
         if (!live) {
           if (turnStatus.cloud && !turnStatus.turn_ready) {
@@ -1823,9 +1902,12 @@
           }
           throw new Error('Media did not reach server — Go live again (TURN/network). Keep this room code.')
         }
+        showLoader("You're in", 'Room ' + room + ' is live')
         setSessionLive(true, 'host')
         log('Room live with ' + live.track_count + ' track(s)')
+        setTimeout(hideLoader, 450)
       } catch (e) {
+        hideLoader()
         closePeer()
         setSessionLive(false)
         const msg = 'Go live failed: ' + (e && e.message ? e.message : e)
@@ -1850,10 +1932,11 @@
         joinBtn.disabled = true
         joinBtn.textContent = 'Waiting for host…'
         publishBtn.disabled = true
-        if (joinHint) joinHint.textContent = 'Checking room ' + room + '…'
+        showLoader('Joining room…', 'Room ' + room + ' · checking host')
+        if (joinHint) joinHint.textContent = ''
         let st = await roomStatus(room)
         if (!st || Number(st.track_count || 0) < 1) {
-          if (joinHint) joinHint.textContent = 'Host not live yet — waiting up to 40s…'
+          showLoader('Waiting for host…', 'Host is not live yet — hang on')
           st = await waitUntilLive(room, 40000)
         }
         if (!st || Number(st.track_count || 0) < 1) {
@@ -1862,11 +1945,15 @@
           }
           throw new Error('Host is not live in this room yet — ask them to Go live, then Join')
         }
+        showLoader('Connecting…', 'Pulling live video & audio')
         joinBtn.textContent = 'Joining…'
         await startViewer()
         joinBtn.textContent = 'Joined'
+        showLoader("You're in", 'Room ' + room)
         setSessionLive(true, 'join')
+        setTimeout(hideLoader, 450)
       } catch (e) {
+        hideLoader()
         closePeer()
         setSessionLive(false)
         joinBtn.disabled = false
