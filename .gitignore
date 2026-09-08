@@ -1,6 +1,8 @@
-*.exe
+﻿*.exe
+*.exe~
 *.log
-
-
-livecast_test.exe
-
+certs/
+facedetect/events.jsonl
+**/__pycache__/
+*.pyc
+.DS_Store
