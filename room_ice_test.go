@@ -65,9 +65,21 @@ func TestOpenRelayStaticCreds(t *testing.T) {
 }
 
 func TestLoadICEServersHasTURN(t *testing.T) {
+	t.Setenv("LIVECAST_CLOUD", "")
+	t.Setenv("RENDER", "")
+	iceCache.mu.Lock()
+	iceCache.servers = nil
+	iceCache.source = ""
+	iceCache.at = time.Time{}
+	iceCache.mu.Unlock()
+
 	servers := loadICEServers()
-	if len(servers) < 2 {
-		t.Fatalf("expected STUN+TURN, got %d", len(servers))
+	if len(servers) < 1 {
+		t.Fatalf("expected ICE servers, got %d", len(servers))
+	}
+	src := iceSource()
+	if src == "stun-only" {
+		t.Skip("cloud stun-only mode — no TURN expected")
 	}
 	hasTURN := false
 	for _, s := range servers {
@@ -82,6 +94,29 @@ func TestLoadICEServersHasTURN(t *testing.T) {
 	}
 	if !hasTURN {
 		t.Fatal("no TURN urls in ICE config")
+	}
+}
+
+func TestCloudWithoutTURNIsStunOnly(t *testing.T) {
+	t.Setenv("LIVECAST_CLOUD", "1")
+	t.Setenv("RENDER", "")
+	t.Setenv("METERED_DOMAIN", "")
+	t.Setenv("METERED_API_KEY", "")
+	t.Setenv("TURN_URLS", "")
+	t.Setenv("TURN_USERNAME", "")
+	t.Setenv("TURN_CREDENTIAL", "")
+	iceCache.mu.Lock()
+	iceCache.servers = nil
+	iceCache.source = ""
+	iceCache.at = time.Time{}
+	iceCache.mu.Unlock()
+
+	_ = loadICEServers()
+	if iceSource() != "stun-only" {
+		t.Fatalf("want stun-only, got %s", iceSource())
+	}
+	if turnReady() {
+		t.Fatal("turn should not be ready without Metered/TURN env")
 	}
 }
 

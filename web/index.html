@@ -1026,6 +1026,7 @@
 
     setMode(uiMode)
     if (roomId) setRoom(roomId)
+    loadTurnStatus()
     setInterval(() => { if (uiMode === 'join') refreshRoomsList() }, 4000)
 
     let pc, videoSender, audioSender
@@ -1394,7 +1395,22 @@
       }
     }
 
+    let turnStatus = { turn_ready: true, ice_source: '', hint: '' }
+
+    async function loadTurnStatus() {
+      try {
+        const res = await fetch('/status?' + Date.now(), { cache: 'no-store' })
+        if (!res.ok) return
+        turnStatus = await res.json()
+        log('TURN: ' + (turnStatus.turn_ready ? 'ready' : 'NOT ready') + ' (' + (turnStatus.ice_source || '?') + ')')
+        if (turnStatus.cloud && !turnStatus.turn_ready && turnStatus.hint) {
+          log(turnStatus.hint)
+        }
+      } catch (_) {}
+    }
+
     async function loadIceConfig() {
+      await loadTurnStatus()
       try {
         const res = await fetch('/ice?' + Date.now(), { cache: 'no-store' })
         if (!res.ok) throw new Error('ice http ' + res.status)
@@ -1403,7 +1419,7 @@
           log('ICE servers: ' + iceServers.length)
           const cfg = { iceServers }
           // Render has no public UDP — prefer TURN relay when available.
-          if (/onrender\.com$/i.test(location.hostname)) {
+          if (/onrender\.com$/i.test(location.hostname) && turnStatus.turn_ready) {
             cfg.iceTransportPolicy = 'relay'
           }
           return cfg
@@ -1635,6 +1651,9 @@
         if (camHint) camHint.textContent = 'Waiting for media on server…'
         const live = await waitUntilLive(room, 50000)
         if (!live) {
+          if (turnStatus.cloud && !turnStatus.turn_ready) {
+            throw new Error('TURN not configured on server — set Metered env on Render, redeploy, then Go live again. Keep this room code.')
+          }
           throw new Error('Media did not reach server — Go live again (TURN/network). Keep this room code.')
         }
         if (camHint) camHint.textContent = 'Live · room ' + room
@@ -1666,6 +1685,9 @@
           st = await waitUntilLive(room, 40000)
         }
         if (!st || Number(st.track_count || 0) < 1) {
+          if (turnStatus.cloud && !turnStatus.turn_ready) {
+            throw new Error('Host cannot go live until Metered TURN is set on Render — then ask them to Go live again')
+          }
           throw new Error('Host is not live in this room yet — ask them to Go live, then Join')
         }
         joinBtn.textContent = 'Joining…'

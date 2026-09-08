@@ -324,7 +324,49 @@ func main() {
 	}
 }
 
+// ICE cache — Metered credentials are short-lived; refresh periodically.
+var iceCache struct {
+	mu      sync.Mutex
+	servers []webrtc.ICEServer
+	source  string // metered | env | staticauth | stun-only
+	at      time.Time
+}
+
+func iceSource() string {
+	_ = loadICEServers()
+	iceCache.mu.Lock()
+	defer iceCache.mu.Unlock()
+	return iceCache.source
+}
+
+func turnReady() bool {
+	s := iceSource()
+	return s == "metered" || s == "env"
+}
+
+func isCloudHost() bool {
+	return os.Getenv("RENDER") == "true" || os.Getenv("LIVECAST_CLOUD") == "1"
+}
+
 func loadICEServers() []webrtc.ICEServer {
+	iceCache.mu.Lock()
+	defer iceCache.mu.Unlock()
+	if len(iceCache.servers) > 0 && time.Since(iceCache.at) < 20*time.Minute {
+		return append([]webrtc.ICEServer(nil), iceCache.servers...)
+	}
+	servers, source := resolveICEServers()
+	iceCache.servers = servers
+	iceCache.source = source
+	iceCache.at = time.Now()
+	fmt.Printf("ICE: provider=%s servers=%d turn_ready=%v\n", source, len(servers), source == "metered" || source == "env")
+	return append([]webrtc.ICEServer(nil), servers...)
+}
+
+func resolveICEServers() ([]webrtc.ICEServer, string) {
+	stunOnly := []webrtc.ICEServer{
+		{URLs: []string{"stun:stun.l.google.com:19302"}},
+	}
+
 	// Preferred: Metered Open Relay REST (free API key from dashboard).
 	if domain := strings.TrimSpace(os.Getenv("METERED_DOMAIN")); domain != "" {
 		apiKey := strings.TrimSpace(os.Getenv("METERED_API_KEY"))
@@ -332,8 +374,7 @@ func loadICEServers() []webrtc.ICEServer {
 			if fetched, err := fetchMeteredICE(domain, apiKey); err != nil {
 				fmt.Printf("ICE: metered fetch failed: %v\n", err)
 			} else if len(fetched) > 0 {
-				fmt.Printf("ICE: Metered Open Relay (%d servers)\n", len(fetched))
-				return fetched
+				return fetched, "metered"
 			}
 		}
 	}
@@ -343,14 +384,20 @@ func loadICEServers() []webrtc.ICEServer {
 	turnPass := strings.TrimSpace(os.Getenv("TURN_CREDENTIAL"))
 	if turnURLs != "" && turnUser != "" && turnPass != "" {
 		urls := splitCSV(turnURLs)
-		fmt.Printf("ICE: STUN + TURN env (%d urls)\n", len(urls))
 		return []webrtc.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
 			{URLs: urls, Username: turnUser, Credential: turnPass},
-		}
+		}, "env"
 	}
 
-	// Open Relay static-auth — works without a private Metered API key (Render-friendly TCP/TLS).
+	// staticauth.openrelay.metered.ca is currently unreachable (TCP timeouts).
+	// On Render/cloud, do not pretend TURN works — media will never arrive.
+	if isCloudHost() {
+		fmt.Println("ICE: ERROR cloud has no working TURN. Set METERED_DOMAIN+METERED_API_KEY (or TURN_URLS+TURN_USERNAME+TURN_CREDENTIAL) on Render.")
+		return stunOnly, "stun-only"
+	}
+
+	// Local LAN: host candidates usually work without TURN; keep legacy static-auth as best-effort.
 	user, cred := openRelayStaticCreds("livecast", 12*time.Hour)
 	urls := []string{
 		"turn:staticauth.openrelay.metered.ca:80",
@@ -359,12 +406,11 @@ func loadICEServers() []webrtc.ICEServer {
 		"turn:staticauth.openrelay.metered.ca:443?transport=tcp",
 		"turns:staticauth.openrelay.metered.ca:443?transport=tcp",
 	}
-	fmt.Println("ICE: Open Relay static-auth TURN (TCP/TLS)")
 	return []webrtc.ICEServer{
 		{URLs: []string{"stun:stun.l.google.com:19302"}},
 		{URLs: []string{"stun:stun.relay.metered.ca:80"}},
 		{URLs: urls, Username: user, Credential: cred},
-	}
+	}, "staticauth"
 }
 
 func splitCSV(s string) []string {
@@ -657,6 +703,27 @@ func httpSDPServer(addr string, rooms *RoomManager, useHTTPS bool) chan sdpExcha
 	mux.Handle("/", http.FileServer(http.Dir("web")))
 	mux.HandleFunc("/ice", func(res http.ResponseWriter, req *http.Request) {
 		writeJSON(res, iceServersJSON())
+	})
+	mux.HandleFunc("/status", func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Access-Control-Allow-Origin", "*")
+		src := iceSource()
+		ready := turnReady()
+		hint := ""
+		switch {
+		case ready:
+			hint = "TURN ready (" + src + ")"
+		case isCloudHost():
+			hint = "Cloud needs Metered TURN: set METERED_DOMAIN + METERED_API_KEY on Render (or TURN_URLS + TURN_USERNAME + TURN_CREDENTIAL). Without this, Go live cannot deliver media."
+		default:
+			hint = "No Metered/TURN env — LAN host candidates may still work"
+		}
+		b, _ := json.Marshal(map[string]any{
+			"cloud":      isCloudHost(),
+			"ice_source": src,
+			"turn_ready": ready,
+			"hint":       hint,
+		})
+		writeJSON(res, b)
 	})
 	mux.HandleFunc("/rooms", func(res http.ResponseWriter, req *http.Request) {
 		b, _ := json.Marshal(map[string]any{"rooms": rooms.list(), "max": maxRooms})
