@@ -250,7 +250,7 @@ func (rm *RoomManager) publish(ex sdpExchange) {
 		return
 	}
 
-	pc, err := rm.api.NewPeerConnection(rm.cfg)
+	pc, err := rm.api.NewPeerConnection(withFreshICE(rm.cfg))
 	if err != nil {
 		ex.err <- err.Error()
 		return
@@ -366,9 +366,16 @@ func (rm *RoomManager) publish(ex sdpExchange) {
 
 	tracks, ok := waitTracksOnly(localTrackChan, 45*time.Second)
 	if !ok {
-		fmt.Printf("room %s: publisher media timeout\n", r.ID)
+		fmt.Printf("room %s: publisher media timeout (ICE/TURN likely blocked)\n", r.ID)
 		_ = pc.Close()
-		rm.remove(r.ID)
+		r.mu.Lock()
+		if r.publisherPC == pc {
+			r.publisherPC = nil
+			r.tracks = nil
+		}
+		r.mu.Unlock()
+		// Keep the room so the host can Go live again with the same code.
+		ex.err <- "media did not connect — check mic/camera, wait 3s, Go live again"
 		return
 	}
 
@@ -418,13 +425,14 @@ func (rm *RoomManager) view(ex sdpExchange) {
 		return
 	}
 
-	// Wait briefly for publisher tracks.
-	deadline := time.After(15 * time.Second)
+	// Wait for publisher tracks (host may still be finishing ICE).
+	deadline := time.After(40 * time.Second)
 	for {
 		r.mu.Lock()
 		tracks := append([]*webrtc.TrackLocalStaticRTP(nil), r.tracks...)
 		ready := r.ready
 		closed := r.closed
+		hasPub := r.publisherPC != nil
 		r.mu.Unlock()
 		if closed {
 			ex.err <- "room closed"
@@ -441,9 +449,13 @@ func (rm *RoomManager) view(ex sdpExchange) {
 		case <-ready:
 			continue
 		case <-deadline:
-			ex.err <- "no publisher media in this room yet — wait and Join again"
+			if !hasPub {
+				ex.err <- "host is not live in this room yet — ask them to Go live, then Join"
+			} else {
+				ex.err <- "host connected but media not ready — wait a few seconds and Join again"
+			}
 			return
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(250 * time.Millisecond):
 		}
 	}
 }

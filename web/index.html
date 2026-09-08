@@ -231,6 +231,31 @@
       min-height: 1.2rem;
     }
     .field-error:empty { display: none; }
+    .rooms-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-top: 0.15rem;
+    }
+    .rooms-list[hidden] { display: none !important; }
+    .room-chip {
+      appearance: none;
+      border: 1px solid var(--line-strong);
+      background: var(--surface-2);
+      color: var(--ink-2);
+      border-radius: 999px;
+      min-height: 2rem;
+      padding: 0.25rem 0.75rem;
+      font-size: 0.8rem;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .room-chip.is-live {
+      border-color: rgba(14, 122, 108, 0.35);
+      background: var(--teal-soft);
+      color: var(--teal);
+    }
+    .room-chip:hover:not(:disabled) { transform: none; }
 
     .role-panel { display: none; gap: 0.75rem; }
     .role-panel.is-on { display: grid; }
@@ -628,12 +653,13 @@
       <div class="room-gate">
         <label for="roomId">Room code</label>
         <div class="room-row">
-          <input id="roomId" type="text" maxlength="24" placeholder="e.g. 6268dda4" autocomplete="off" spellcheck="false" inputmode="text">
+          <input id="roomId" type="text" maxlength="24" placeholder="type room code" autocomplete="off" spellcheck="false" inputmode="text">
           <button id="newRoomBtn" class="btn-ghost" type="button">New room</button>
           <button id="copyRoomBtn" class="btn-ghost" type="button">Copy link</button>
         </div>
-        <p id="roomHint" class="field-hint">3–24 characters · letters, numbers, _ or -</p>
+        <p id="roomHint" class="field-hint">Enter a code manually, or click New room. Codes do not auto-change.</p>
         <p id="roomError" class="field-error" role="alert"></p>
+        <div id="roomsList" class="rooms-list" hidden></div>
       </div>
 
       <div id="hostPanel" class="role-panel is-on">
@@ -817,6 +843,7 @@
     const gateTitle = document.getElementById('gateTitle')
     const gateCopy = document.getElementById('gateCopy')
     const joinHint = document.getElementById('joinHint')
+    const roomsList = document.getElementById('roomsList')
 
     const ROOM_RE = /^[a-zA-Z0-9_-]{3,24}$/
     let roomId = ''
@@ -846,7 +873,7 @@
     }
 
     function currentRoom() {
-      return (roomIdInput.value || roomId || '').trim().toLowerCase()
+      return (roomIdInput.value || '').trim().toLowerCase()
     }
 
     function setRoom(id) {
@@ -897,12 +924,13 @@
       newRoomBtn.style.display = uiMode === 'host' ? '' : 'none'
       if (uiMode === 'host') {
         gateTitle.textContent = 'Host a live room'
-        gateCopy.textContent = 'Create or enter a room, allow camera, then go live.'
-        roomHint.textContent = 'Host: New room creates a fresh code. Share the link with viewers.'
+        gateCopy.textContent = 'Type a room code (or New room), allow camera, then Go live. Code never auto-changes.'
+        roomHint.textContent = 'Multiple sessions: each code is a separate room (max 5). Use Copy link for viewers.'
       } else {
         gateTitle.textContent = 'Join a live cast'
-        gateCopy.textContent = 'Paste the room code from the host link, then join.'
-        roomHint.textContent = 'Join needs the exact room code from the host (or open their Copy link URL).'
+        gateCopy.textContent = 'Type the exact host room code — it will not auto-update from another session.'
+        roomHint.textContent = 'Active rooms show as chips below when the server has sessions.'
+        refreshRoomsList()
       }
       const url = new URL(location.href)
       if (uiMode === 'join') url.searchParams.set('mode', 'join')
@@ -914,6 +942,31 @@
     function roomQS() {
       const r = currentRoom()
       return r ? ('room=' + encodeURIComponent(r) + '&') : ''
+    }
+
+    async function refreshRoomsList() {
+      if (!roomsList) return
+      try {
+        const res = await fetch('/rooms', { cache: 'no-store' })
+        const data = await res.json()
+        const rooms = (data && data.rooms) || []
+        roomsList.innerHTML = ''
+        if (!rooms.length) {
+          roomsList.hidden = true
+          return
+        }
+        roomsList.hidden = false
+        rooms.forEach((r) => {
+          const btn = document.createElement('button')
+          btn.type = 'button'
+          btn.className = 'room-chip' + (Number(r.track_count || 0) > 0 ? ' is-live' : '')
+          btn.textContent = r.id + (Number(r.track_count || 0) > 0 ? ' · live' : (r.publisher ? ' · waiting' : ''))
+          btn.onclick = () => { setRoom(r.id); roomIdInput.focus() }
+          roomsList.appendChild(btn)
+        })
+      } catch (_) {
+        roomsList.hidden = true
+      }
     }
 
     modeHostBtn.onclick = () => setMode('host')
@@ -936,10 +989,10 @@
     copyRoomBtn.onclick = async () => {
       const r = validateRoom({ required: true })
       if (!r) return
-      const link = location.origin + '/?room=' + encodeURIComponent(r)
+      const link = location.origin + '/?room=' + encodeURIComponent(r) + '&mode=join'
       try {
         await navigator.clipboard.writeText(link)
-        roomHint.textContent = 'Link copied — share with viewers'
+        roomHint.textContent = 'Viewer link copied'
         log('Copied: ' + link)
       } catch (_) {
         roomHint.textContent = link
@@ -949,6 +1002,14 @@
     roomIdInput.addEventListener('input', () => {
       roomIdInput.value = roomIdInput.value.replace(/\s+/g, '').toLowerCase()
       clearRoomError()
+      const id = roomIdInput.value.trim()
+      if (id && ROOM_RE.test(id)) {
+        roomPill.classList.remove('is-empty')
+        roomPillText.textContent = 'Room ' + id
+      } else if (!id) {
+        roomPill.classList.add('is-empty')
+        roomPillText.textContent = 'No room selected'
+      }
     })
     roomIdInput.addEventListener('change', () => {
       const id = currentRoom()
@@ -965,6 +1026,7 @@
 
     setMode(uiMode)
     if (roomId) setRoom(roomId)
+    setInterval(() => { if (uiMode === 'join') refreshRoomsList() }, 4000)
 
     let pc, videoSender, audioSender
     let sharedStream = null, screenStream = null
@@ -1334,30 +1396,39 @@
 
     async function loadIceConfig() {
       try {
-        const res = await fetch('/ice', { cache: 'no-store' })
+        const res = await fetch('/ice?' + Date.now(), { cache: 'no-store' })
         if (!res.ok) throw new Error('ice http ' + res.status)
         const iceServers = await res.json()
         if (Array.isArray(iceServers) && iceServers.length) {
           log('ICE servers: ' + iceServers.length)
-          return { iceServers }
+          const cfg = { iceServers }
+          // Render has no public UDP — prefer TURN relay when available.
+          if (/onrender\.com$/i.test(location.hostname)) {
+            cfg.iceTransportPolicy = 'relay'
+          }
+          return cfg
         }
       } catch (e) {
         log('ICE config fallback: ' + e)
       }
-      return {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          {
-            urls: [
-              'turn:openrelay.metered.ca:80',
-              'turn:openrelay.metered.ca:443?transport=tcp',
-              'turns:openrelay.metered.ca:443?transport=tcp'
-            ],
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          }
-        ]
+      return { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
+    }
+
+    async function roomStatus(id) {
+      const res = await fetch('/rooms', { cache: 'no-store' })
+      const data = await res.json()
+      const rooms = (data && data.rooms) || []
+      return rooms.find((r) => String(r.id).toLowerCase() === String(id).toLowerCase()) || null
+    }
+
+    async function waitUntilLive(room, timeoutMs = 45000) {
+      const start = Date.now()
+      while (Date.now() - start < timeoutMs) {
+        const st = await roomStatus(room)
+        if (st && Number(st.track_count || 0) > 0) return st
+        await new Promise((r) => setTimeout(r, 1000))
       }
+      return null
     }
 
     function waitIceComplete(timeoutMs = 2500) {
@@ -1554,22 +1625,20 @@
     publishBtn.onclick = async () => {
       try {
         setMode('host')
-        let room = currentRoom()
-        if (room) {
-          room = validateRoom({ required: true })
-          if (!room) return
-        } else {
-          const res = await fetch('/room/new', { method: 'POST' })
-          if (!res.ok) throw new Error('Could not create room')
-          const data = await res.json()
-          if (!data.room) throw new Error('Empty room from server')
-          setRoom(data.room)
-          log('Auto room: ' + data.room)
-        }
+        const room = validateRoom({ required: true })
+        if (!room) return
         allowCamBtn.disabled = true
         publishBtn.disabled = true
         joinBtn.disabled = true
+        if (camHint) camHint.textContent = 'Going live…'
         await startPublisher()
+        if (camHint) camHint.textContent = 'Waiting for media on server…'
+        const live = await waitUntilLive(room, 50000)
+        if (!live) {
+          throw new Error('Media did not reach server — Go live again (TURN/network). Keep this room code.')
+        }
+        if (camHint) camHint.textContent = 'Live · room ' + room
+        log('Room live with ' + live.track_count + ' track(s)')
       } catch (e) {
         const msg = 'Go live failed: ' + (e && e.message ? e.message : e)
         log(msg)
@@ -1588,8 +1657,18 @@
         const room = validateRoom({ required: true })
         if (!room) return
         joinBtn.disabled = true
-        joinBtn.textContent = 'Joining…'
+        joinBtn.textContent = 'Waiting for host…'
         publishBtn.disabled = true
+        if (joinHint) joinHint.textContent = 'Checking room ' + room + '…'
+        let st = await roomStatus(room)
+        if (!st || Number(st.track_count || 0) < 1) {
+          if (joinHint) joinHint.textContent = 'Host not live yet — waiting up to 40s…'
+          st = await waitUntilLive(room, 40000)
+        }
+        if (!st || Number(st.track_count || 0) < 1) {
+          throw new Error('Host is not live in this room yet — ask them to Go live, then Join')
+        }
+        joinBtn.textContent = 'Joining…'
         await startViewer()
         joinBtn.textContent = 'Joined'
         if (joinHint) joinHint.textContent = 'Joined room ' + room

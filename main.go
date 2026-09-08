@@ -8,6 +8,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/hmac"
+	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -323,17 +325,11 @@ func main() {
 }
 
 func loadICEServers() []webrtc.ICEServer {
-	servers := []webrtc.ICEServer{
-		{URLs: []string{"stun:stun.l.google.com:19302"}},
-		{URLs: []string{"stun:stun.cloudflare.com:3478"}},
-		{URLs: []string{"stun:stun.relay.metered.ca:80"}},
-	}
-
-	// Preferred: Metered Open Relay REST (free API key).
-	if key := strings.TrimSpace(os.Getenv("METERED_DOMAIN")); key != "" {
+	// Preferred: Metered Open Relay REST (free API key from dashboard).
+	if domain := strings.TrimSpace(os.Getenv("METERED_DOMAIN")); domain != "" {
 		apiKey := strings.TrimSpace(os.Getenv("METERED_API_KEY"))
 		if apiKey != "" {
-			if fetched, err := fetchMeteredICE(key, apiKey); err != nil {
+			if fetched, err := fetchMeteredICE(domain, apiKey); err != nil {
 				fmt.Printf("ICE: metered fetch failed: %v\n", err)
 			} else if len(fetched) > 0 {
 				fmt.Printf("ICE: Metered Open Relay (%d servers)\n", len(fetched))
@@ -345,42 +341,61 @@ func loadICEServers() []webrtc.ICEServer {
 	turnURLs := strings.TrimSpace(os.Getenv("TURN_URLS"))
 	turnUser := strings.TrimSpace(os.Getenv("TURN_USERNAME"))
 	turnPass := strings.TrimSpace(os.Getenv("TURN_CREDENTIAL"))
-	if turnURLs == "" {
-		// Cloud-friendly defaults (TCP/TLS TURN). May require METERED_API_KEY if auth rejected.
-		turnURLs = strings.Join([]string{
-			"turn:openrelay.metered.ca:80",
-			"turn:openrelay.metered.ca:80?transport=tcp",
-			"turn:openrelay.metered.ca:443",
-			"turn:openrelay.metered.ca:443?transport=tcp",
-			"turns:openrelay.metered.ca:443?transport=tcp",
-		}, ",")
-		if turnUser == "" {
-			turnUser = "openrelayproject"
-		}
-		if turnPass == "" {
-			turnPass = "openrelayproject"
-		}
-	}
 	if turnURLs != "" && turnUser != "" && turnPass != "" {
-		urls := []string{}
-		for _, u := range strings.Split(turnURLs, ",") {
-			u = strings.TrimSpace(u)
-			if u != "" {
-				urls = append(urls, u)
-			}
-		}
-		if len(urls) > 0 {
-			servers = append(servers, webrtc.ICEServer{
-				URLs:       urls,
-				Username:   turnUser,
-				Credential: turnPass,
-			})
-			fmt.Printf("ICE: STUN + TURN (%d urls)\n", len(urls))
-			return servers
+		urls := splitCSV(turnURLs)
+		fmt.Printf("ICE: STUN + TURN env (%d urls)\n", len(urls))
+		return []webrtc.ICEServer{
+			{URLs: []string{"stun:stun.l.google.com:19302"}},
+			{URLs: urls, Username: turnUser, Credential: turnPass},
 		}
 	}
-	fmt.Println("ICE: STUN only — set METERED_API_KEY or TURN_* for Render/cross-network")
-	return servers
+
+	// Open Relay static-auth — works without a private Metered API key (Render-friendly TCP/TLS).
+	user, cred := openRelayStaticCreds("livecast", 12*time.Hour)
+	urls := []string{
+		"turn:staticauth.openrelay.metered.ca:80",
+		"turn:staticauth.openrelay.metered.ca:80?transport=tcp",
+		"turn:staticauth.openrelay.metered.ca:443",
+		"turn:staticauth.openrelay.metered.ca:443?transport=tcp",
+		"turns:staticauth.openrelay.metered.ca:443?transport=tcp",
+	}
+	fmt.Println("ICE: Open Relay static-auth TURN (TCP/TLS)")
+	return []webrtc.ICEServer{
+		{URLs: []string{"stun:stun.l.google.com:19302"}},
+		{URLs: []string{"stun:stun.relay.metered.ca:80"}},
+		{URLs: urls, Username: user, Credential: cred},
+	}
+}
+
+func splitCSV(s string) []string {
+	out := []string{}
+	for _, u := range strings.Split(s, ",") {
+		u = strings.TrimSpace(u)
+		if u != "" {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// openRelayStaticCreds builds coturn-style temporary credentials for
+// staticauth.openrelay.metered.ca (Open Relay / Nextcloud published secret).
+func openRelayStaticCreds(user string, ttl time.Duration) (username, credential string) {
+	secret := strings.TrimSpace(os.Getenv("OPENRELAY_SECRET"))
+	if secret == "" {
+		secret = "openrelayprojectsecret"
+	}
+	expire := time.Now().Add(ttl).Unix()
+	username = fmt.Sprintf("%d:%s", expire, user)
+	mac := hmac.New(sha1.New, []byte(secret))
+	_, _ = mac.Write([]byte(username))
+	credential = base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	return username, credential
+}
+
+func withFreshICE(cfg webrtc.Configuration) webrtc.Configuration {
+	cfg.ICEServers = loadICEServers()
+	return cfg
 }
 
 func fetchMeteredICE(domain, apiKey string) ([]webrtc.ICEServer, error) {
@@ -477,7 +492,7 @@ func handleViewer(
 		return err
 	}
 
-	viewerPC, err := api.NewPeerConnection(cfg)
+	viewerPC, err := api.NewPeerConnection(withFreshICE(cfg))
 	if err != nil {
 		return err
 	}
