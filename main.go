@@ -433,13 +433,22 @@ func fetchMeteredICE(domain, apiKey string) ([]webrtc.ICEServer, error) {
 func iceServersJSON() []byte {
 	servers := loadICEServers()
 	type iceJSON struct {
-		URLs       []string `json:"urls"`
-		Username   string   `json:"username,omitempty"`
-		Credential string   `json:"credential,omitempty"`
+		URLs       any    `json:"urls"`
+		Username   string `json:"username,omitempty"`
+		Credential string `json:"credential,omitempty"`
 	}
 	out := make([]iceJSON, 0, len(servers))
 	for _, s := range servers {
-		out = append(out, iceJSON{URLs: s.URLs, Username: s.Username, Credential: fmt.Sprint(s.Credential)})
+		item := iceJSON{URLs: s.URLs}
+		if s.Username != "" {
+			item.Username = s.Username
+		}
+		if s.Credential != nil {
+			if c, ok := s.Credential.(string); ok && c != "" {
+				item.Credential = c
+			}
+		}
+		out = append(out, item)
 	}
 	b, _ := json.Marshal(out)
 	return b
