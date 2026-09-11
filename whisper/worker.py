@@ -38,8 +38,14 @@ STT_MODEL = (os.environ.get("STT_MODEL") or os.environ.get("OPENAI_STT_MODEL") o
 
 
 def resolve_backend() -> str:
-    if STT_BACKEND in ("openai", "local"):
-        return STT_BACKEND
+    if STT_BACKEND == "local":
+        return "local"
+    if STT_BACKEND == "openai":
+        if OPENAI_API_KEY:
+            return "openai"
+        sys.stderr.write("stt: STT_BACKEND=openai but OPENAI_API_KEY missing — using local\n")
+        sys.stderr.flush()
+        return "local"
     if OPENAI_API_KEY:
         return "openai"
     return "local"
@@ -375,12 +381,15 @@ def main() -> int:
     def should_finalize(chunk_text: str) -> bool:
         nonlocal last_final_at
         now = time.time()
-        if now - last_final_at < 3.5:
+        if now - last_final_at < 2.5:
             return False
         t = chunk_text.strip()
         if t.endswith((".", "?", "!", "।", "…")):
             return True
-        if len(t.split()) >= 8 and now - last_final_at > 5.0:
+        words = t.split()
+        if len(words) >= 5 and now - last_final_at > 3.5:
+            return True
+        if len(words) >= 3 and now - last_final_at > 6.0:
             return True
         return False
 

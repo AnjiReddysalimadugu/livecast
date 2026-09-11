@@ -359,6 +359,12 @@ var iceCache struct {
 }
 
 func iceSource() string {
+	iceCache.mu.Lock()
+	src := iceCache.source
+	iceCache.mu.Unlock()
+	if src != "" {
+		return src
+	}
 	_ = loadICEServers()
 	iceCache.mu.Lock()
 	defer iceCache.mu.Unlock()
@@ -376,14 +382,26 @@ func isCloudHost() bool {
 
 func loadICEServers() []webrtc.ICEServer {
 	iceCache.mu.Lock()
-	defer iceCache.mu.Unlock()
-	if len(iceCache.servers) > 0 && time.Since(iceCache.at) < 20*time.Minute {
-		return append([]webrtc.ICEServer(nil), iceCache.servers...)
+	if len(iceCache.servers) > 0 && iceCache.source != "stun-only" && time.Since(iceCache.at) < 20*time.Minute {
+		out := append([]webrtc.ICEServer(nil), iceCache.servers...)
+		iceCache.mu.Unlock()
+		return out
 	}
+	// Short TTL for failed cloud TURN so Metered blips self-heal.
+	if iceCache.source == "stun-only" && time.Since(iceCache.at) < 45*time.Second {
+		out := append([]webrtc.ICEServer(nil), iceCache.servers...)
+		iceCache.mu.Unlock()
+		return out
+	}
+	iceCache.mu.Unlock()
+
 	servers, source := resolveICEServers()
+
+	iceCache.mu.Lock()
 	iceCache.servers = servers
 	iceCache.source = source
 	iceCache.at = time.Now()
+	iceCache.mu.Unlock()
 	fmt.Printf("ICE: provider=%s servers=%d turn_ready=%v\n", source, len(servers), source == "metered" || source == "env")
 	return append([]webrtc.ICEServer(nil), servers...)
 }
@@ -582,7 +600,18 @@ func handleViewer(
 		return err
 	}
 
-	for _, localTrack := range localTracks {
+	ordered := make([]*webrtc.TrackLocalStaticRTP, 0, len(localTracks))
+	for _, t := range localTracks {
+		if t != nil && t.Kind() == webrtc.RTPCodecTypeAudio {
+			ordered = append(ordered, t)
+		}
+	}
+	for _, t := range localTracks {
+		if t != nil && t.Kind() == webrtc.RTPCodecTypeVideo {
+			ordered = append(ordered, t)
+		}
+	}
+	for _, localTrack := range ordered {
 		rtpSender, err := viewerPC.AddTrack(localTrack)
 		if err != nil {
 			_ = viewerPC.Close()
@@ -771,6 +800,34 @@ func httpSDPServer(addr string, rooms *RoomManager, useHTTPS bool) chan sdpExcha
 		id := newRoomID()
 		b, _ := json.Marshal(map[string]string{"room": id})
 		writeJSON(res, b)
+	})
+	mux.HandleFunc("/room/end", func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Access-Control-Allow-Origin", "*")
+		res.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		res.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if req.Method == http.MethodOptions {
+			res.WriteHeader(http.StatusOK)
+			return
+		}
+		if req.Method != http.MethodPost {
+			http.Error(res, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimSpace(req.URL.Query().Get("room"))
+		if id == "" {
+			var body struct {
+				Room string `json:"room"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			id = body.Room
+		}
+		nid, err := normalizeRoomID(id)
+		if err != nil {
+			http.Error(res, err.Error(), http.StatusBadRequest)
+			return
+		}
+		rooms.remove(nid)
+		writeJSON(res, []byte(`{"ok":true,"room":"`+nid+`"}`))
 	})
 	mux.HandleFunc("/face", func(res http.ResponseWriter, req *http.Request) {
 		if r := roomFromRequest(req, rooms); r != nil {

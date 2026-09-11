@@ -987,6 +987,9 @@
     function endSession(opts) {
       const keepCam = !!(opts && opts.keepCamera)
       const room = currentRoom()
+      if (room && !isViewer) {
+        fetch('/room/end?room=' + encodeURIComponent(room), { method: 'POST' }).catch(() => {})
+      }
       closePeer()
       if (!keepCam) stopLocalMedia()
       if (remoteStream) {
@@ -1007,7 +1010,7 @@
       faceStatus.textContent = 'waiting…'
       faceStatus.className = 'no'
       hideLoader()
-      log(room ? ('Ended session · room ' + room + ' kept') : 'Ended session')
+      log(room ? ('Ended session · room ' + room) : 'Ended session')
     }
 
     function setSessionLive(on, role) {
@@ -1916,8 +1919,8 @@
         }
       }
 
-      pc.addTransceiver('video', { direction: 'recvonly' })
       pc.addTransceiver('audio', { direction: 'recvonly' })
+      pc.addTransceiver('video', { direction: 'recvonly' })
       remoteStream = new MediaStream()
       gotRemoteTrack = false
       video.srcObject = remoteStream

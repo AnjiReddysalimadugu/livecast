@@ -16,6 +16,7 @@ COPY web /app/web
 COPY whisper /app/whisper
 COPY facedetect /app/facedetect
 COPY translate /app/translate
+COPY answer /app/answer
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt \
     && python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu', compute_type='int8')"

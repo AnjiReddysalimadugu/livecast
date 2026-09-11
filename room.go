@@ -217,9 +217,10 @@ func (rm *RoomManager) getOrCreate(id string) (*Room, error) {
 
 	fw, err := startFaceWorker(r.faces)
 	if err != nil {
-		return nil, fmt.Errorf("face worker: %w", err)
+		fmt.Printf("room %s: face worker disabled: %v\n", id, err)
+	} else {
+		r.faceWorker = fw
 	}
-	r.faceWorker = fw
 
 	asr, err := startWhisperWorker(r.transcripts, func(line []byte) {
 		r.translator.onTranscriptJSON(line)
@@ -320,6 +321,9 @@ func (rm *RoomManager) publish(ex sdpExchange) {
 		_ = r.publisherPC.Close()
 		r.publisherPC = nil
 		r.tracks = nil
+		// Drop old viewers — their tracks are dead after republish.
+		oldViewers := append([]*webrtc.PeerConnection(nil), r.viewerPCs...)
+		r.viewerPCs = nil
 		select {
 		case <-r.ready:
 		default:
@@ -329,6 +333,13 @@ func (rm *RoomManager) publish(ex sdpExchange) {
 		r.transcripts.reset()
 		r.answers.reset()
 		r.translations.reset()
+		r.mu.Unlock()
+		for _, v := range oldViewers {
+			if v != nil {
+				_ = v.Close()
+			}
+		}
+		r.mu.Lock()
 	}
 	r.mu.Unlock()
 
