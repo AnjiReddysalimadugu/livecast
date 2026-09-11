@@ -13,8 +13,15 @@
         value: tiny
       - key: WHISPER_LANGUAGE
         value: en
-      # Free Metered Open Relay — required for WebRTC on Render (no public UDP).
-      # https://www.metered.ca/tools/openrelay/ → set in Render Dashboard:
+      - key: VOICE_ASSIST
+        value: "1"
+      # Optional: smarter voice replies (otherwise echo fallback + browser TTS)
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      # Free Metered Open Relay — required on Render (no public UDP).
+      # https://www.metered.ca/tools/openrelay/
       - key: METERED_DOMAIN
         sync: false
       - key: METERED_API_KEY

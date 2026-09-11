@@ -686,7 +686,22 @@
       min-height: 1.2rem;
     }
 
-    #answerStatus, #answerBox { display: none !important; }
+    .voice-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      align-items: center;
+      margin: 0 0 0.65rem;
+      font-size: 0.84rem;
+      color: var(--ink-2);
+    }
+    .voice-toolbar label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      cursor: pointer;
+      user-select: none;
+    }
 
     @media (max-width: 980px) {
       .workspace { grid-template-columns: 1fr; }
@@ -833,6 +848,18 @@
 
         <section class="panel card">
           <div class="card-head">
+            <h2>Voice reply</h2>
+            <span id="answerStatus" class="status-chip">waiting…</span>
+          </div>
+          <div class="voice-toolbar">
+            <label><input id="speakReplies" type="checkbox" checked> Speak replies</label>
+            <button id="stopSpeakBtn" class="btn-ghost btn-compact" type="button">Stop voice</button>
+          </div>
+          <div id="answerBox" class="feed" data-empty="Speak after Go live — AI replies here and can be spoken aloud."></div>
+        </section>
+
+        <section class="panel card">
+          <div class="card-head">
             <h2>Translation</h2>
             <span id="translateStatus" class="status-chip">waiting…</span>
           </div>
@@ -856,9 +883,6 @@
         </section>
       </aside>
     </div>
-
-    <p id="answerStatus"></p>
-    <div id="answerBox"></div>
 
     <details class="logs">
       <summary>Session logs</summary>
@@ -885,6 +909,13 @@
     const applyTranslateBtn = document.getElementById('applyTranslateBtn')
     const answerStatus = document.getElementById('answerStatus')
     const answerBox = document.getElementById('answerBox')
+    const speakReplies = document.getElementById('speakReplies')
+    const stopSpeakBtn = document.getElementById('stopSpeakBtn')
+    if (stopSpeakBtn) {
+      stopSpeakBtn.onclick = () => {
+        try { window.speechSynthesis && window.speechSynthesis.cancel() } catch (_) {}
+      }
+    }
     const windowSec = document.getElementById('windowSec')
     const windowCustom = document.getElementById('windowCustom')
     const applyWindowBtn = document.getElementById('applyWindowBtn')
@@ -1325,15 +1356,49 @@
       }
     }
 
+    function speakText(text) {
+      if (!speakReplies || !speakReplies.checked) return
+      if (!window.speechSynthesis || !text) return
+      try {
+        window.speechSynthesis.cancel()
+        const u = new SpeechSynthesisUtterance(text)
+        u.rate = 1.02
+        u.pitch = 1
+        window.speechSynthesis.speak(u)
+      } catch (e) {
+        log('TTS failed: ' + e)
+      }
+    }
+
     function applyAnswer(payload) {
       const q = (payload.question || '').trim()
       const a = (payload.answer || '').trim()
       const status = payload.status || ''
-      if (status === 'thinking' || status === 'error' || !a) return
+      const err = (payload.error || '').trim()
+      if (status === 'thinking') {
+        answerStatus.textContent = 'thinking…'
+        answerStatus.classList.add('is-live')
+        return
+      }
+      if (status === 'error') {
+        answerStatus.textContent = 'error'
+        answerStatus.classList.remove('is-live')
+        if (err) log('Voice reply error: ' + err)
+        return
+      }
+      if (!a) return
+      answerStatus.textContent = 'live'
+      answerStatus.classList.add('is-live')
       const key = q + '|' + a
       if (key !== lastAnswerKey) {
         lastAnswerKey = key
-        answerBox.innerHTML += '<div><b>Q:</b> ' + escapeHtml(q) + '<br><b>A:</b> ' + escapeHtml(a) + '</div>'
+        const block = document.createElement('div')
+        block.className = 'row'
+        block.innerHTML = '<span class="src">' + escapeHtml(q || 'You') + '</span>' + escapeHtml(a)
+        answerBox.appendChild(block)
+        answerBox.scrollTop = answerBox.scrollHeight
+        if (payload.speak !== false) speakText(a)
+        log('Voice reply: ' + a.slice(0, 120))
       }
     }
 
@@ -1751,8 +1816,11 @@
       lastTranslateKey = ''
       transcriptBox.innerHTML = ''
       translateBox.innerHTML = ''
+      if (answerBox) answerBox.innerHTML = ''
+      lastAnswerKey = ''
       transcriptStatus.textContent = 'connecting…'
       translateStatus.textContent = 'waiting…'
+      if (answerStatus) answerStatus.textContent = 'listening…'
       closePeer()
 
       const iceConfig = await loadIceConfig()

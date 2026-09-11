@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -224,9 +223,7 @@ func (rm *RoomManager) getOrCreate(id string) (*Room, error) {
 
 	asr, err := startWhisperWorker(r.transcripts, func(line []byte) {
 		r.translator.onTranscriptJSON(line)
-		if os.Getenv("ANSWER_AUTO") == "1" {
-			r.answerBot.onTranscriptJSON(line)
-		}
+		r.answerBot.onTranscriptJSON(line)
 	})
 	if err != nil {
 		fmt.Printf("room %s: whisper disabled: %v\n", id, err)

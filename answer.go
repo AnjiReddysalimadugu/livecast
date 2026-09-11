@@ -81,7 +81,20 @@ type answerClient struct {
 
 	mu       sync.Mutex
 	lastQ    string
+	lastAt   time.Time
 	inflight bool
+}
+
+func voiceAssistEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("VOICE_ASSIST"))
+	if v == "0" || strings.EqualFold(v, "false") || strings.EqualFold(v, "off") {
+		return false
+	}
+	// Default ON — ChatGPT-style voice reply loop (Whisper → LLM → browser TTS).
+	if v == "" {
+		return true
+	}
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
 }
 
 func answerURL() string {
@@ -92,10 +105,14 @@ func answerURL() string {
 }
 
 func startLocalAnswerService() error {
-	// If ANSWER_URL points elsewhere, do not spawn local process.
 	if u := strings.TrimSpace(os.Getenv("ANSWER_URL")); u != "" &&
 		!strings.Contains(u, "127.0.0.1") && !strings.Contains(u, "localhost") {
 		fmt.Printf("answer: using remote service %s\n", u)
+		return nil
+	}
+	// OpenAI path is in-process — no local Python needed.
+	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
+		fmt.Println("answer: OpenAI API key set — in-process voice replies")
 		return nil
 	}
 	script, err := filepath.Abs(filepath.Join("answer", "server.py"))
@@ -119,13 +136,13 @@ func startLocalAnswerService() error {
 		if err == nil {
 			_ = res.Body.Close()
 			if res.StatusCode == 200 {
-				fmt.Println("answer-service: local Ollama Q&A ready on :8091")
+				fmt.Println("answer-service: local Q&A ready on :8091")
 				return nil
 			}
 		}
 		time.Sleep(400 * time.Millisecond)
 	}
-	return fmt.Errorf("answer service health timeout")
+	return fmt.Errorf("answer service health timeout (optional — OpenAI fallback/echo still works)")
 }
 
 func newAnswerClient(hub *answerHub) *answerClient {
@@ -138,9 +155,9 @@ func newAnswerClient(hub *answerHub) *answerClient {
 	}
 }
 
-func looksLikeQuestion(text string) bool {
+func looksLikeUtterance(text string) bool {
 	t := strings.TrimSpace(text)
-	if len(t) < 8 {
+	if len(t) < 6 {
 		return false
 	}
 	letters := 0
@@ -153,27 +170,32 @@ func looksLikeQuestion(text string) bool {
 }
 
 func (c *answerClient) onTranscriptJSON(raw []byte) {
-	if c == nil || c.hub == nil {
+	if c == nil || c.hub == nil || !voiceAssistEnabled() {
 		return
 	}
 	var payload struct {
-		Text   string `json:"text"`
-		Status string `json:"status"`
+		Text    string `json:"text"`
+		Status  string `json:"status"`
+		Partial bool   `json:"partial"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return
 	}
+	if payload.Partial {
+		return
+	}
 	q := strings.TrimSpace(payload.Text)
-	if payload.Status != "ok" || !looksLikeQuestion(q) {
+	if payload.Status != "ok" || !looksLikeUtterance(q) {
 		return
 	}
 
 	c.mu.Lock()
-	if q == c.lastQ || c.inflight {
+	if q == c.lastQ || c.inflight || time.Since(c.lastAt) < 4*time.Second {
 		c.mu.Unlock()
 		return
 	}
 	c.lastQ = q
+	c.lastAt = time.Now()
 	c.inflight = true
 	c.mu.Unlock()
 
@@ -188,31 +210,120 @@ func (c *answerClient) onTranscriptJSON(raw []byte) {
 			"question": question,
 			"answer":   "",
 			"status":   "thinking",
+			"speak":    true,
 		})
 		c.hub.broadcast(pending)
-		fmt.Printf("answer: asking LLM for %q\n", question)
+		fmt.Printf("voice-assist: thinking for %q\n", question)
 
-		body, _ := json.Marshal(map[string]string{"question": question})
-		req, err := http.NewRequest(http.MethodPost, c.url, bytes.NewReader(body))
+		answer, model, err := c.generateAnswer(question)
 		if err != nil {
 			c.emitError(question, err.Error())
 			return
 		}
-		req.Header.Set("Content-Type", "application/json")
-		res, err := c.client.Do(req)
-		if err != nil {
-			c.emitError(question, "answer service unreachable: "+err.Error())
-			return
-		}
-		defer res.Body.Close()
-		raw, _ := io.ReadAll(res.Body)
-		if res.StatusCode >= 300 {
-			c.emitError(question, fmt.Sprintf("HTTP %d: %s", res.StatusCode, string(raw)))
-			return
-		}
-		c.hub.broadcast(raw)
-		fmt.Printf("answer: %s\n", raw)
+		out, _ := json.Marshal(map[string]any{
+			"question": question,
+			"answer":   answer,
+			"model":    model,
+			"status":   "ok",
+			"speak":    true,
+		})
+		c.hub.broadcast(out)
+		fmt.Printf("voice-assist: %s\n", answer)
 	}(q)
+}
+
+func (c *answerClient) generateAnswer(question string) (answer, model string, err error) {
+	if key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); key != "" {
+		return askOpenAI(c.client, key, question)
+	}
+	// Prefer local/remote answer HTTP service (Ollama wrapper).
+	body, _ := json.Marshal(map[string]string{"question": question})
+	req, err := http.NewRequest(http.MethodPost, c.url, bytes.NewReader(body))
+	if err != nil {
+		return fallbackAnswer(question), "echo", nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.client.Do(req)
+	if err != nil {
+		return fallbackAnswer(question), "echo", nil
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return fallbackAnswer(question), "echo", nil
+	}
+	var parsed struct {
+		Answer string `json:"answer"`
+		Model  string `json:"model"`
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if json.Unmarshal(raw, &parsed) != nil || strings.TrimSpace(parsed.Answer) == "" {
+		return fallbackAnswer(question), "echo", nil
+	}
+	model = parsed.Model
+	if model == "" {
+		model = "answer-service"
+	}
+	return strings.TrimSpace(parsed.Answer), model, nil
+}
+
+func fallbackAnswer(question string) string {
+	return "I heard: " + question + ". Set OPENAI_API_KEY for smarter voice replies."
+}
+
+func askOpenAI(client *http.Client, apiKey, question string) (string, string, error) {
+	base := strings.TrimRight(strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")), "/")
+	if base == "" {
+		base = "https://api.openai.com/v1"
+	}
+	model := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
+	if model == "" {
+		model = "gpt-4o-mini"
+	}
+	system := strings.TrimSpace(os.Getenv("ANSWER_SYSTEM"))
+	if system == "" {
+		system = "You are a helpful live-call voice assistant. Reply in 1-3 short sentences, same language as the user. No markdown."
+	}
+	payload := map[string]any{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": system},
+			{"role": "user", "content": question},
+		},
+		"temperature": 0.5,
+		"max_tokens":  180,
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest(http.MethodPost, base+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", model, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	res, err := client.Do(req)
+	if err != nil {
+		return "", model, err
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return "", model, fmt.Errorf("openai HTTP %d: %s", res.StatusCode, string(raw))
+	}
+	var parsed struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return "", model, err
+	}
+	if len(parsed.Choices) == 0 {
+		return "", model, fmt.Errorf("openai empty choices")
+	}
+	return strings.TrimSpace(parsed.Choices[0].Message.Content), model, nil
 }
 
 func (c *answerClient) emitError(question, msg string) {
@@ -221,9 +332,10 @@ func (c *answerClient) emitError(question, msg string) {
 		"answer":   "",
 		"status":   "error",
 		"error":    msg,
+		"speak":    false,
 	})
 	c.hub.broadcast(out)
-	fmt.Printf("answer error: %s\n", msg)
+	fmt.Printf("voice-assist error: %s\n", msg)
 }
 
 func createAnswerChannel(pc *webrtc.PeerConnection, hub *answerHub) error {

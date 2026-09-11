@@ -305,12 +305,14 @@ func main() {
 	}
 	defer events.close()
 
-	if os.Getenv("ANSWER_AUTO") == "1" {
+	if voiceAssistEnabled() {
 		if err := startLocalAnswerService(); err != nil {
-			fmt.Printf("answer service: %v\n", err)
+			fmt.Printf("voice-assist: local service optional (%v) — OpenAI/echo still work\n", err)
+		} else {
+			fmt.Println("voice-assist: ON (Whisper → reply → browser speaks)")
 		}
 	} else {
-		fmt.Println("answer auto: off (set ANSWER_AUTO=1 to enable Q&A bot)")
+		fmt.Println("voice-assist: OFF (set VOICE_ASSIST=1 to enable)")
 	}
 	_ = saveTranslateConfig(loadTranslateConfig())
 
@@ -748,10 +750,11 @@ func httpSDPServer(addr string, rooms *RoomManager, useHTTPS bool) chan sdpExcha
 			hint = "No Metered/TURN env — LAN host candidates may still work"
 		}
 		b, _ := json.Marshal(map[string]any{
-			"cloud":      isCloudHost(),
-			"ice_source": src,
-			"turn_ready": ready,
-			"hint":       hint,
+			"cloud":         isCloudHost(),
+			"ice_source":    src,
+			"turn_ready":    ready,
+			"voice_assist":  voiceAssistEnabled(),
+			"hint":          hint,
 		})
 		writeJSON(res, b)
 	})
