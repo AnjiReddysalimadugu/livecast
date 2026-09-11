@@ -15,7 +15,11 @@
         value: en
       - key: VOICE_ASSIST
         value: "1"
-      # Optional: smarter voice replies (otherwise echo fallback + browser TTS)
+      - key: STT_BACKEND
+        value: auto
+      - key: STT_MODEL
+        value: gpt-transcribe
+      # Optional: smarter STT + voice replies (OpenAI). Without key → local Whisper tiny.
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL

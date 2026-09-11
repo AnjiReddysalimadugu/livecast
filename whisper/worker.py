@@ -29,6 +29,96 @@ INITIAL_PROMPT = os.environ.get(
     "WHISPER_PROMPT",
     "Live meeting captions with names and clear punctuation.",
 )
+# STT backend: auto | openai | local
+# auto → OpenAI gpt-transcribe when OPENAI_API_KEY is set (much better than local tiny).
+STT_BACKEND = (os.environ.get("STT_BACKEND") or "auto").strip().lower()
+OPENAI_API_KEY = (os.environ.get("OPENAI_API_KEY") or "").strip()
+OPENAI_BASE = (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+STT_MODEL = (os.environ.get("STT_MODEL") or os.environ.get("OPENAI_STT_MODEL") or "gpt-transcribe").strip()
+
+
+def resolve_backend() -> str:
+    if STT_BACKEND in ("openai", "local"):
+        return STT_BACKEND
+    if OPENAI_API_KEY:
+        return "openai"
+    return "local"
+
+
+def pcm_to_wav_bytes(pcm: np.ndarray, rate: int = TARGET_RATE) -> bytes:
+    import io
+    import wave
+
+    pcm16 = np.clip(pcm * 32767.0, -32768, 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(pcm16.tobytes())
+    return buf.getvalue()
+
+
+def transcribe_openai(wav: bytes, model_name: str | None = None) -> tuple[str, str]:
+    """Cloud STT via OpenAI /v1/audio/transcriptions (gpt-transcribe / whisper-1)."""
+    import urllib.error
+    import urllib.request
+    import uuid
+
+    model = (model_name or STT_MODEL).strip() or "gpt-transcribe"
+    boundary = "----livecast" + uuid.uuid4().hex
+    fields: list[tuple[str, bytes, str | None]] = [
+        ("model", model.encode("utf-8"), None),
+        ("response_format", b"json", None),
+        ("file", wav, "chunk.wav"),
+    ]
+    if LANGUAGE:
+        fields.append(("language", LANGUAGE.encode("utf-8"), None))
+    if INITIAL_PROMPT:
+        fields.append(("prompt", INITIAL_PROMPT.encode("utf-8"), None))
+
+    body = bytearray()
+    for name, value, filename in fields:
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        if filename:
+            body.extend(
+                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode(
+                    "utf-8"
+                )
+            )
+            body.extend(b"Content-Type: audio/wav\r\n\r\n")
+            body.extend(value)
+            body.extend(b"\r\n")
+        else:
+            body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+            body.extend(value)
+            body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+    req = urllib.request.Request(
+        f"{OPENAI_BASE}/audio/transcriptions",
+        data=bytes(body),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as res:
+            data = json.loads(res.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        if model != "whisper-1" and exc.code in (400, 404):
+            sys.stderr.write(
+                f"stt: model {model} failed ({exc.code}), retrying whisper-1\n"
+            )
+            sys.stderr.flush()
+            return transcribe_openai(wav, "whisper-1")
+        raise RuntimeError(f"openai STT HTTP {exc.code}: {err_body}") from exc
+
+    text = normalize(str(data.get("text") or ""))
+    return text, model
 
 
 def read_exact(stream, n: int) -> bytes:
@@ -167,16 +257,42 @@ def packet_to_pcm(decoders: list, resampler, payload: bytes) -> np.ndarray | Non
 
 
 def main() -> int:
-    from faster_whisper import WhisperModel
+    backend = resolve_backend()
+    # OpenAI chunks: slightly longer windows = better accuracy / fewer API calls.
+    global CHUNK_SEC, STEP_SEC, MIN_INTERVAL
+    if backend == "openai":
+        CHUNK_SEC = float(os.environ.get("WHISPER_CHUNK_SEC", "2.2"))
+        STEP_SEC = float(os.environ.get("WHISPER_STEP_SEC", "1.1"))
+        MIN_INTERVAL = float(os.environ.get("WHISPER_MIN_INTERVAL", "0.35"))
 
-    sys.stderr.write(
-        f"whisper-worker: loading model={MODEL_NAME} chunk={CHUNK_SEC}s…\n"
+    model = None
+    engine_name = STT_MODEL if backend == "openai" else MODEL_NAME
+    if backend == "local":
+        from faster_whisper import WhisperModel
+
+        sys.stderr.write(
+            f"stt-worker: backend=local faster-whisper model={MODEL_NAME} chunk={CHUNK_SEC}s\n"
+        )
+        sys.stderr.flush()
+        model = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
+    else:
+        sys.stderr.write(
+            f"stt-worker: backend=openai model={STT_MODEL} chunk={CHUNK_SEC}s "
+            f"(better than local Whisper tiny)\n"
+        )
+        sys.stderr.flush()
+
+    sys.stderr.write(f"stt-worker: ready backend={backend}\n")
+    sys.stderr.flush()
+    emit(
+        {
+            "text": "",
+            "partial": False,
+            "status": "ready",
+            "model": engine_name,
+            "backend": backend,
+        }
     )
-    sys.stderr.flush()
-    model = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
-    sys.stderr.write("whisper-worker: ready (continuous captions)\n")
-    sys.stderr.flush()
-    emit({"text": "", "partial": False, "status": "ready", "model": MODEL_NAME})
 
     # Prefer stereo (Chrome default), keep mono as fallback decoder.
     decoders = [make_opus_decoder(2), make_opus_decoder(1)]
@@ -188,6 +304,7 @@ def main() -> int:
     cursor = 0
     full_text = ""
     last_emitted = ""
+    last_final_at = 0.0
     stop = threading.Event()
 
     stats = {
@@ -255,8 +372,20 @@ def main() -> int:
         with pcm_lock:
             return max(0.0, (pcm_samples - cursor) / TARGET_RATE)
 
+    def should_finalize(chunk_text: str) -> bool:
+        nonlocal last_final_at
+        now = time.time()
+        if now - last_final_at < 3.5:
+            return False
+        t = chunk_text.strip()
+        if t.endswith((".", "?", "!", "।", "…")):
+            return True
+        if len(t.split()) >= 8 and now - last_final_at > 5.0:
+            return True
+        return False
+
     def infer_loop() -> None:
-        nonlocal full_text, last_emitted
+        nonlocal full_text, last_emitted, last_final_at
         last_status = 0.0
         while not stop.is_set():
             now = time.time()
@@ -275,10 +404,12 @@ def main() -> int:
                         "buffered_sec": round(lag, 2),
                         "queued_sec": round(buffered, 2),
                         "rms": round(stats["last_rms"], 4),
+                        "backend": backend,
+                        "model": engine_name,
                     }
                 )
                 sys.stderr.write(
-                    f"whisper-worker: pkt={stats['pkt']} ok={stats['ok']} "
+                    f"stt-worker: backend={backend} pkt={stats['pkt']} ok={stats['ok']} "
                     f"fail={stats['fail']} lag={lag:.2f}s rms={stats['last_rms']:.4f}\n"
                 )
                 sys.stderr.flush()
@@ -286,7 +417,7 @@ def main() -> int:
 
             skipped = catch_up_if_behind()
             if skipped:
-                sys.stderr.write(f"whisper-worker: catch-up skipped {skipped:.1f}s lag\n")
+                sys.stderr.write(f"stt-worker: catch-up skipped {skipped:.1f}s lag\n")
                 sys.stderr.flush()
 
             window = take_window()
@@ -301,21 +432,28 @@ def main() -> int:
 
             t0 = time.time()
             try:
-                segments, info = model.transcribe(
-                    window,
-                    language=LANGUAGE,
-                    beam_size=1,
-                    best_of=1,
-                    temperature=0.0,
-                    vad_filter=False,
-                    condition_on_previous_text=False,
-                    without_timestamps=True,
-                    initial_prompt=INITIAL_PROMPT,
-                )
-                chunk_text = " ".join(s.text.strip() for s in segments).strip()
-                lang = getattr(info, "language", None) or (LANGUAGE or "")
+                if backend == "openai":
+                    chunk_text, used_model = transcribe_openai(pcm_to_wav_bytes(window))
+                    lang = LANGUAGE or ""
+                    engine = used_model
+                else:
+                    assert model is not None
+                    segments, info = model.transcribe(
+                        window,
+                        language=LANGUAGE,
+                        beam_size=1,
+                        best_of=1,
+                        temperature=0.0,
+                        vad_filter=False,
+                        condition_on_previous_text=False,
+                        without_timestamps=True,
+                        initial_prompt=INITIAL_PROMPT,
+                    )
+                    chunk_text = " ".join(s.text.strip() for s in segments).strip()
+                    lang = getattr(info, "language", None) or (LANGUAGE or "")
+                    engine = MODEL_NAME
             except Exception as exc:
-                sys.stderr.write(f"whisper-worker infer error: {exc}\n")
+                sys.stderr.write(f"stt-worker infer error: {exc}\n")
                 sys.stderr.flush()
                 traceback.print_exc(file=sys.stderr)
                 time.sleep(MIN_INTERVAL)
@@ -325,23 +463,27 @@ def main() -> int:
             if chunk_text:
                 full_text = merge_transcript(full_text, chunk_text)
                 show = full_text if len(full_text) <= 500 else ("…" + full_text[-500:])
-                if show != last_emitted:
+                final = should_finalize(chunk_text)
+                if show != last_emitted or final:
                     last_emitted = show
+                    if final:
+                        last_final_at = time.time()
                     emit(
                         {
                             "text": show,
-                            "partial": True,
+                            "partial": not final,
                             "status": "ok",
                             "lang": lang,
                             "rms": round(rms, 4),
                             "infer_ms": int(elapsed * 1000),
                             "buffered_sec": round(lag_sec(), 2),
+                            "backend": backend,
+                            "model": engine,
                         }
                     )
-            # Prefer staying near live over waiting out a long min-interval.
             time.sleep(0.02 if elapsed > STEP_SEC else max(0.02, MIN_INTERVAL - elapsed))
 
-    worker = threading.Thread(target=infer_loop, name="whisper-infer", daemon=True)
+    worker = threading.Thread(target=infer_loop, name="stt-infer", daemon=True)
     worker.start()
 
     stdin = sys.stdin.buffer
@@ -356,7 +498,7 @@ def main() -> int:
             except EOFError:
                 break
             except Exception as exc:
-                sys.stderr.write(f"whisper-worker read error: {exc}\n")
+                sys.stderr.write(f"stt-worker read error: {exc}\n")
                 sys.stderr.flush()
                 break
 

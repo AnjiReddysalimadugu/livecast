@@ -1306,8 +1306,10 @@
       const text = (payload.text || '').trim()
       const status = payload.status || ''
       const lang = payload.lang ? (' · ' + payload.lang) : ''
+      const backend = payload.backend ? (' · ' + payload.backend) : ''
+      const model = payload.model && payload.backend === 'openai' ? ('/' + payload.model) : ''
       const extra = payload.buffered_sec != null ? (' · lag ' + payload.buffered_sec + 's') : ''
-      transcriptStatus.textContent = (status || 'listening') + lang + extra
+      transcriptStatus.textContent = (status || 'listening') + backend + model + lang + extra
       if (!text) return
       if (text === lastTranscriptLine) return
       lastTranscriptLine = text

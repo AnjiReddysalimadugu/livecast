@@ -106,6 +106,8 @@ func startWhisperWorker(hub *transcriptHub, onLine func([]byte)) (*whisperWorker
 		"WHISPER_MIN_INTERVAL="+getenvDefault("WHISPER_MIN_INTERVAL", "0.12"),
 		"WHISPER_MAX_BUF_SEC="+getenvDefault("WHISPER_MAX_BUF_SEC", "4.5"),
 		"WHISPER_MAX_LAG_SEC="+getenvDefault("WHISPER_MAX_LAG_SEC", "2.2"),
+		"STT_BACKEND="+getenvDefault("STT_BACKEND", "auto"),
+		"STT_MODEL="+getenvDefault("STT_MODEL", "gpt-transcribe"),
 	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -159,7 +161,7 @@ func startWhisperWorker(hub *transcriptHub, onLine func([]byte)) (*whisperWorker
 		}
 	}()
 
-	fmt.Println("Server-side Whisper STT worker started (audio stream → text)")
+	fmt.Println("Server-side STT worker started (OpenAI gpt-transcribe if key set, else local Whisper)")
 	return w, nil
 }
 
